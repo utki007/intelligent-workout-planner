@@ -43,10 +43,6 @@ data/
 *.xls
 ~$*.xlsx
 
-# Config files (runtime)
-config/offset_config.json
-config/rate_limit.json
-
 # OS
 .DS_Store
 Thumbs.db
