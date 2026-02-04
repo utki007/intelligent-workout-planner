@@ -36,13 +36,6 @@ ENV/
 *.swo
 *~
 
-# Data files
-data/
-*.json
-*.xlsx
-*.xls
-~$*.xlsx
-
 # OS
 .DS_Store
 Thumbs.db
