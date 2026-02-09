@@ -42,3 +42,14 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Data files
+data/
+*.json
+*.xlsx
+*.xls
+~$*.xlsx
+
+# Config files
+config/offset_config.json
+config/rate_limit.json
