@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intelligent Workout Planner</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="profile-panel">
+      <h1>Workout Planner</h1>
+      <p class="subtitle">Chat with your planner to update preferences, set injuries, and generate safe plans.</p>
+
+      <div class="profile-card">
+        <h2>Session Profile</h2>
+        <dl id="profile-summary">
+          <div><dt>Goal</dt><dd id="profile-goal">general fitness</dd></div>
+          <div><dt>Level</dt><dd id="profile-level">beginner</dd></div>
+          <div><dt>Days / Week</dt><dd id="profile-days">3</dd></div>
+          <div><dt>Minutes</dt><dd id="profile-minutes">45</dd></div>
+          <div><dt>Injuries</dt><dd id="profile-injuries">none</dd></div>
+          <div><dt>No Equipment</dt><dd id="profile-equipment">none</dd></div>
+          <div><dt>Focus</dt><dd id="profile-focus">none</dd></div>
+        </dl>
+      </div>
+
+      <div class="chip-grid">
+        <button class="chip" data-prompt="Set my profile: intermediate, 4 days per week, 50 minutes">Update profile</button>
+        <button class="chip" data-prompt="I have a knee injury and shoulder injury. Update my constraints.">Set injuries</button>
+        <button class="chip" data-prompt="Recommend 8 beginner-friendly back exercises with body weight">Get exercises</button>
+        <button class="chip" data-prompt="Generate my weekly plan">Generate plan</button>
+      </div>
+    </aside>
+
+    <main class="chat-panel">
+      <header class="chat-header">
+        <div>
+          <h2>Coach Chat</h2>
+          <p id="status-text">Connected to planner backend</p>
+        </div>
+        <span id="llm-badge" class="badge">LLM: unknown</span>
+      </header>
+
+      <section id="chat-log" class="chat-log" aria-live="polite"></section>
+
+      <form id="chat-form" class="composer">
+        <textarea
+          id="chat-input"
+          name="message"
+          placeholder="Ask for a workout plan, update your profile, or request safe exercise recommendations..."
+          rows="2"
+          required
+        ></textarea>
+        <button id="send-btn" type="submit">Send</button>
+      </form>
+    </main>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
