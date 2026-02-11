@@ -3,6 +3,7 @@ Exercise Database Module
 
 This module provides functionality to fetch exercises from ExerciseDB API
 and save them in various formats (JSON, Excel).
+Includes utility functions for data manipulation and display.
 """
 
 import requests
@@ -12,10 +13,167 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 
 # Load environment variables
 load_dotenv()
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def remove_duplicates_by_id(exercises: List[Dict]) -> List[Dict]:
+    """
+    Remove duplicates from exercises list based on 'id' primary key.
+    Keeps the first occurrence of each unique ID.
+    
+    Args:
+        exercises: List of exercise dictionaries
+    
+    Returns:
+        List of exercises with duplicates removed
+    """
+    if not exercises:
+        return []
+    
+    seen_ids: Set[str] = set()
+    unique_exercises = []
+    duplicates_count = 0
+    
+    for exercise in exercises:
+        ex_id = exercise.get('id')
+        
+        # Skip exercises without valid ID
+        if ex_id is None or ex_id == '' or (isinstance(ex_id, float) and pd.isna(ex_id)):
+            continue
+        
+        ex_id_str = str(ex_id).strip()
+        
+        if ex_id_str in seen_ids:
+            duplicates_count += 1
+            continue
+        
+        seen_ids.add(ex_id_str)
+        unique_exercises.append(exercise)
+    
+    if duplicates_count > 0:
+        print(f"⚠️  Removed {duplicates_count} duplicate exercise(s) (same ID)")
+    
+    return unique_exercises
+
+
+def get_existing_ids(exercises: List[Dict]) -> Set[str]:
+    """
+    Extract set of existing exercise IDs from a list of exercises.
+    
+    Args:
+        exercises: List of exercise dictionaries
+    
+    Returns:
+        Set of exercise ID strings
+    """
+    return {
+        str(ex.get('id')).strip()
+        for ex in exercises
+        if ex.get('id') is not None and ex.get('id') != ''
+    }
+
+
+def filter_new_exercises(new_exercises: List[Dict], existing_ids: Set[str]) -> List[Dict]:
+    """
+    Filter out exercises that already exist based on ID comparison.
+    
+    Args:
+        new_exercises: List of new exercise dictionaries
+        existing_ids: Set of existing exercise ID strings
+    
+    Returns:
+        List of exercises that don't exist yet
+    """
+    filtered = []
+    for ex in new_exercises:
+        ex_id = ex.get('id')
+        if ex_id is None or ex_id == '':
+            continue
+        ex_id_str = str(ex_id).strip()
+        if ex_id_str not in existing_ids:
+            filtered.append(ex)
+            existing_ids.add(ex_id_str)  # Prevent duplicates in same batch
+    
+    return filtered
+
+
+def read_json_file(filepath: str) -> List[Dict]:
+    """
+    Read exercises from JSON file, handling errors gracefully.
+    
+    Args:
+        filepath: Path to JSON file
+    
+    Returns:
+        List of exercise dictionaries, empty list if file doesn't exist or is invalid
+    """
+    if not os.path.exists(filepath):
+        return []
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return []
+        return data
+    except (json.JSONDecodeError, IOError):
+        return []
+
+
+def display_exercises_summary(exercises: List[Dict], display_count: Optional[int] = None) -> None:
+    """
+    Display exercises in DataFrame view with ID, name, target, and body part.
+    
+    Args:
+        exercises: List of exercise dictionaries
+        display_count: Number of exercises to display (None = show all)
+    """
+    if not exercises:
+        return
+    
+    df = pd.DataFrame(exercises)
+    display_columns = ['id', 'name', 'target', 'bodyPart']
+    available_columns = [col for col in display_columns if col in df.columns]
+    
+    if not available_columns:
+        print("⚠️  No displayable columns found in exercises")
+        return
+    
+    display_df = df[available_columns].copy()
+    column_rename = {
+        'id': 'ID',
+        'name': 'Name',
+        'target': 'Target',
+        'bodyPart': 'Body Part'
+    }
+    display_df = display_df.rename(columns=column_rename)
+    
+    if display_count is not None:
+        display_df = display_df.head(display_count)
+        print(f"\nExercises (showing first {display_count} of {len(df)}):")
+    else:
+        print(f"\nAll exercises ({len(df)} total):")
+    
+    print("=" * 80)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', 50)
+    print(display_df.to_string(index=False))
+    
+    if display_count is not None and len(df) > display_count:
+        print(f"\n... and {len(df) - display_count} more exercises (see Excel file for full list)")
+
+
+# ============================================================================
+# ExerciseDB Class
+# ============================================================================
 
 
 class ExerciseDB:
@@ -73,50 +231,6 @@ class ExerciseDB:
     def _get_file_path(self, filename: str) -> str:
         """Get full file path in data directory."""
         return os.path.join(self.data_dir, filename)
-    
-    def _remove_duplicates_by_id(self, exercises: List[Dict]) -> List[Dict]:
-        """
-        Remove duplicates from exercises list based on 'id' primary key.
-        Keeps the first occurrence of each unique ID.
-        
-        Args:
-            exercises: List of exercise dictionaries
-        
-        Returns:
-            List of exercises with duplicates removed
-        """
-        if not exercises:
-            return []
-        
-        seen_ids = set()
-        unique_exercises = []
-        duplicates_count = 0
-        
-        for exercise in exercises:
-            # Get ID and validate it
-            ex_id = exercise.get('id')
-            
-            # Skip exercises without valid ID
-            if ex_id is None or ex_id == '' or (isinstance(ex_id, float) and pd.isna(ex_id)):
-                print(f"⚠️  Skipping exercise without valid ID: {exercise.get('name', 'Unknown')}")
-                continue
-            
-            # Convert ID to string for consistent comparison
-            ex_id_str = str(ex_id).strip()
-            
-            # Check if we've seen this ID before
-            if ex_id_str in seen_ids:
-                duplicates_count += 1
-                continue
-            
-            # Add to seen set and unique list
-            seen_ids.add(ex_id_str)
-            unique_exercises.append(exercise)
-        
-        if duplicates_count > 0:
-            print(f"⚠️  Removed {duplicates_count} duplicate exercise(s) from new data (same ID)")
-        
-        return unique_exercises
     
     def _load_offset(self) -> int:
         """
@@ -442,8 +556,7 @@ class ExerciseDB:
     
     def save_to_json(self, exercises: List[Dict], filename: str = "exercises_db.json") -> bool:
         """
-        Save exercises to a JSON file in raw form.
-        Appends to existing file if it exists, otherwise creates new file.
+        Save exercises to a JSON file. Appends to existing file if it exists.
         
         Args:
             exercises: List of exercise dictionaries
@@ -452,59 +565,33 @@ class ExerciseDB:
         Returns:
             True if successful, False otherwise
         """
-        if exercises is None or not exercises:
+        if not exercises:
             print("✗ No exercises to save.")
             return False
         
         try:
             filepath = self._get_file_path(filename)
-            existing_exercises = []
             
-            # Read existing data if file exists
-            if os.path.exists(filepath):
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        existing_exercises = json.load(f)
-                    if not isinstance(existing_exercises, list):
-                        existing_exercises = []
-                    print(f"📖 Read {len(existing_exercises)} existing exercises from {filename}")
-                except (json.JSONDecodeError, IOError) as e:
-                    print(f"⚠️  Could not read existing file: {e}. Creating new file.")
-                    existing_exercises = []
+            # Read existing exercises
+            existing_exercises = read_json_file(filepath)
+            if existing_exercises:
+                print(f"📖 Read {len(existing_exercises)} existing exercises from {filename}")
             
-            # Remove duplicates from existing data (in case file has duplicates)
-            existing_exercises = self._remove_duplicates_by_id(existing_exercises)
-            
-            # Remove duplicates within new exercises list
-            new_exercises = self._remove_duplicates_by_id(exercises)
-            
-            # Get existing IDs (convert to strings for consistent comparison)
-            existing_ids = {
-                str(ex.get('id')).strip() 
-                for ex in existing_exercises 
-                if ex.get('id') is not None and ex.get('id') != ''
-            }
+            # Remove duplicates from existing and new data
+            existing_exercises = remove_duplicates_by_id(existing_exercises)
+            new_exercises = remove_duplicates_by_id(exercises)
             
             # Filter out exercises that already exist
-            filtered_exercises = []
-            for ex in new_exercises:
-                ex_id = ex.get('id')
-                if ex_id is None or ex_id == '':
-                    continue
-                ex_id_str = str(ex_id).strip()
-                if ex_id_str not in existing_ids:
-                    filtered_exercises.append(ex)
-                    existing_ids.add(ex_id_str)  # Add to set to prevent duplicates in same batch
+            existing_ids = get_existing_ids(existing_exercises)
+            filtered_exercises = filter_new_exercises(new_exercises, existing_ids)
             
-            skipped_count = len(exercises) - len(filtered_exercises)
+            skipped_count = len(new_exercises) - len(filtered_exercises)
             if skipped_count > 0:
                 print(f"⚠️  Skipped {skipped_count} exercise(s) that already exist in file")
             
-            # Combine existing and new exercises
+            # Combine and ensure no duplicates
             all_exercises = existing_exercises + filtered_exercises
-            
-            # Final check: ensure no duplicates in final list
-            all_exercises = self._remove_duplicates_by_id(all_exercises)
+            all_exercises = remove_duplicates_by_id(all_exercises)
             
             # Save combined data
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -553,7 +640,7 @@ class ExerciseDB:
                     existing_df = None
             
             # Remove duplicates from new exercises list first
-            unique_exercises = self._remove_duplicates_by_id(exercises)
+            unique_exercises = remove_duplicates_by_id(exercises)
             
             # Convert new exercises to DataFrame
             print(f"Converting {len(unique_exercises)} new exercises to DataFrame...")
@@ -676,3 +763,75 @@ class ExerciseDB:
             import traceback
             traceback.print_exc()
             return False
+
+
+def fetch_and_save_exercises(limit: int = 20, 
+                             json_filename: str = "exercises_db.json",
+                             excel_filename: str = "exercises_db.xlsx",
+                             show_summary: bool = True) -> Optional[List[Dict]]:
+    """
+    Complete workflow: Initialize database, fetch exercises, and save to files.
+    
+    Args:
+        limit: Number of exercises to fetch
+        json_filename: Name of the JSON output file
+        excel_filename: Name of the Excel output file
+        show_summary: Whether to display exercise summary
+    
+    Returns:
+        List of exercise dictionaries if successful, None otherwise
+    """
+    try:
+        # Initialize ExerciseDB
+        db = ExerciseDB()
+        
+        # Show status
+        current_offset = db.get_current_offset()
+        print(f"📍 Current offset: {current_offset}")
+        print(f"   (Will fetch exercises starting from position {current_offset})")
+        
+        rate_status = db.get_rate_limit_status()
+        print(f"📊 Rate limit status: {rate_status['requests_used']}/{rate_status['max_requests']} requests used this hour")
+        print(f"   Remaining: {rate_status['requests_remaining']} requests")
+        if rate_status['wait_seconds']:
+            wait_min = rate_status['wait_seconds'] / 60
+            print(f"   ⚠️  Will need to wait {wait_min:.1f} minutes before next request")
+        
+        # Fetch exercises
+        exercises = db.fetch_exercises(limit=limit)
+        
+        if exercises:
+            print(f"\n✓ Fetched {len(exercises)} exercises")
+            
+            # Save to files
+            if db.save_to_json(exercises, json_filename):
+                print("\n" + "=" * 60)
+                print(f"SUCCESS! {len(exercises)} exercises saved to data/{json_filename}")
+                print("=" * 60)
+            
+            if db.save_to_excel(exercises, excel_filename):
+                print("\n" + "=" * 60)
+                print(f"SUCCESS! {len(exercises)} exercises saved to data/{excel_filename}")
+                print("Excel file includes serial numbers for each exercise.")
+                print("=" * 60)
+            
+            # Display summary if requested
+            if show_summary:
+                display_exercises_summary(exercises, display_count=None)
+        else:
+            print("\n✗ Failed to fetch exercises. Please check:")
+            print("  1. Your API key is correct (EXERCISE_API_KEY in .env)")
+            print("  2. BASE_URL is set correctly in .env")
+            print("  3. You're subscribed to ExerciseDB on RapidAPI")
+            print("  4. Your internet connection is working")
+        
+        return exercises
+    
+    except ValueError as e:
+        print(f"\n✗ Configuration Error: {e}")
+        return None
+    except Exception as e:
+        print(f"\n✗ Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
