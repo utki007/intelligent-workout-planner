@@ -281,7 +281,7 @@ class KnowledgeBase:
                 if target:
                     if injury_list and any(inj in target for inj in injury_list):
                         # This *shouldn't* happen for recommended exercises, but handle defensively.
-                            # recommended because beginner, but NOTE: target overlaps injuries (data inconsistency)
+                        # recommended because beginner, but NOTE: target overlaps injuries (data inconsistency)
                         reason = (
                             "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}), "
                             "but {m} ∈ injured_muscle({u}, ·) (should be forbidden)."
