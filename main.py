@@ -23,18 +23,13 @@ from data.excel_storage import (
 from planner.weekly_planner import WeeklyPlanner, generate_next_week
 
 
-# Layout constants
-WIDTH = 62
-COL_NAME = 36
-COL_SETS = 10
-COL_WEIGHT = 14
-
-
 def print_plan(plan: dict) -> None:
-    """Print weekly plan with clear layout and KRR reasoning."""
-    sep = "═" * WIDTH
+    """Print weekly plan with clear, intuitive layout and KRR reasoning."""
+    WIDTH = 62
     thin = "─" * WIDTH
+    sep = "═" * WIDTH
 
+    sep = "═" * WIDTH
     print()
     print(sep)
     print("  WEEK {}  ·  WORKOUT PLAN".format(plan["week_number"]))
@@ -49,15 +44,14 @@ def print_plan(plan: dict) -> None:
         print("  Warmup   {}".format(d["warmup"]))
 
         if d["exercises"]:
-            # Header for exercise table
-            print("  " + "Exercise".ljust(COL_NAME) + "Sets × Reps".rjust(COL_SETS + 2) + "Weight".rjust(COL_WEIGHT))
-            print("  " + "─" * (COL_NAME + COL_SETS + COL_WEIGHT))
-            for ex in d["exercises"]:
+            print("  Exercises:")
+            for idx, ex in enumerate(d["exercises"], 1):
                 w = ex.get("weight", 0) or 0
-                weight_str = "{} kg".format(w) if w > 0 else "bodyweight"
-                name = _truncate(ex["name"], COL_NAME - 2)
-                sets_reps = "{} × {}".format(ex["sets"], ex["reps"])
-                print("  " + name.ljust(COL_NAME) + sets_reps.rjust(COL_SETS) + weight_str.rjust(COL_WEIGHT))
+                if w > 0:
+                    detail = "{} sets of {} reps at {} kg".format(ex["sets"], ex["reps"], w)
+                else:
+                    detail = "{} sets of {} reps (bodyweight)".format(ex["sets"], ex["reps"])
+                print("    {}. {} — {}".format(idx, ex["name"], detail))
         else:
             print("  — Rest (no exercises; theme conflicts with your profile)")
 
@@ -81,6 +75,7 @@ def _truncate(s: str, max_len: int) -> str:
 
 def _print_krr_block(krr_lines: list) -> None:
     """Print full KRR reasoning (Facts, Rules, Inference) with clear formatting."""
+    WIDTH = 62
     print("  ┌─ KRR Reasoning " + "─" * (WIDTH - 18))
     for line in krr_lines:
         print("  │  {}".format(line))
@@ -90,6 +85,7 @@ def _print_krr_block(krr_lines: list) -> None:
 def _print_krr_fallback(day_plan: dict) -> None:
     """KRR-style fallback when plan has no krr list."""
     exercises = day_plan.get("exercises") or []
+    WIDTH = 62
     n = len(exercises)
     print("  ┌─ KRR Reasoning " + "─" * (WIDTH - 18))
     print("  │  Inference: Result = {} exercise(s) (plan loaded without full derivation)".format(n))
@@ -142,7 +138,12 @@ def example_usage():
         injury_muscles=["delts"],  # avoid shoulder-heavy exercises
         current_intensity_level=1,
     )
-    print(f"User: {user.name} (id={user.user_id}), intensity={user.current_intensity_level}/5")
+    injuries = ", ".join(user.injury_muscles) if user.injury_muscles else "none"
+    print(
+        f"User: {user.name} (id={user.user_id}), "
+        f"age {user.age}, weight {user.weight} kg, level={user.experience_level}, "
+        f"injuries={injuries}, intensity={user.current_intensity_level}/5"
+    )
 
     plan = generate_next_week(user_id)
     print_plan(plan)
