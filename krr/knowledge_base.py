@@ -283,12 +283,11 @@ class KnowledgeBase:
                         # This *shouldn't* happen for recommended exercises, but handle defensively.
                         # recommended because beginner, but NOTE: target overlaps injuries (data inconsistency)
                         reason = (
-                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}), "
-                            "but {m} ∈ injured_muscle({u}, ·) (should be forbidden)."
+                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}) ∧ injured_muscle({u}, {m}) (should be forbidden)."
                         ).format(e=en, d=diff, m=target, u=user_id)
                     else:
                         reason = (
-                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}) ∧ {m} ∉ injured_muscle({u}, ·)"
+                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}) ∧ ¬injured_muscle({u}, {m})"
                         ).format(e=en, d=diff, m=target or "target", u=user_id)
                 else:
                     reason = "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ ¬forbidden({u}, {e})".format(
