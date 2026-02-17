@@ -184,11 +184,13 @@ class KnowledgeBase:
         exercise_names: List[str],
     ) -> List[str]:
         """
-        Build KRR-style reasoning for one day: Facts, Rules, Inference (query + result).
-        Returns a list of lines for formatted display.
+        Build detailed KRR-style reasoning for one day:
+        - Facts (injuries)
+        - Rules (forbidden / recommended)
+        - Inference with concrete examples (why exercises are chosen or all forbidden)
         """
         injury_list = getattr(self, "_last_injury_list", [])
-        lines = []
+        lines: List[str] = []
 
         # Facts (user profile)
         lines.append("Facts:")
@@ -208,13 +210,94 @@ class KnowledgeBase:
         # Inference for this day
         lines.append("Inference (Day {} — {}):".format(day, day_focus))
         lines.append("  Query: recommended({}, E) where E matches theme {}".format(user_id, theme_keywords))
+
+        # Try to look up extra details from the exercise DataFrame
+        try:
+            df = self.get_exercise_dataframe()
+        except Exception:
+            df = None
+
         if not exercise_names:
             lines.append("  Result: ∅")
             lines.append("  ⇒ All exercises for this theme are forbidden (train injured muscles).")
+
+            # Give one concrete forbidden example if possible
+            if df is not None and theme_keywords:
+                try:
+                    example_line_added = False
+                    for _, row in df.iterrows():
+                        name = str(row.get("name", "")).strip()
+                        if not name:
+                            continue
+                        target = str(row.get("target", "")).strip().lower()
+                        if not any(kw.lower() in target for kw in theme_keywords):
+                            continue
+                        try:
+                            forb_res = forbidden_exercise(user_id, name)  # type: ignore
+                        except Exception:
+                            forb_res = ()
+                        if forb_res:
+                            # Try to match which injured muscle explains the forbiddance
+                            offending = ""
+                            for inj in injury_list:
+                                if inj in target:
+                                    offending = inj
+                                    break
+                            offending = offending or (target or "injured area")
+                            lines.append(
+                                "  Example: forbidden({}, \"{}\") because trains_muscle({}, {}) ∧ injured_muscle({}, {}).".format(
+                                    user_id, name, name, offending, user_id, offending
+                                )
+                            )
+                            example_line_added = True
+                            break
+                    if not example_line_added and injury_list:
+                        lines.append(
+                            "  (No specific example found in DB, but any exercise that trains {} would be forbidden.)".format(
+                                ", ".join(injury_list)
+                            )
+                        )
+                except Exception:
+                    pass
         else:
             lines.append("  Result: {} exercise(s)".format(len(exercise_names)))
+            # For a few selected exercises, explain *why* they are recommended
             for en in exercise_names[:4]:
-                lines.append("    ✓ recommended({}, \"{}\")".format(user_id, en))
+                target = ""
+                diff = "beginner"
+                if df is not None:
+                    try:
+                        row = df[df["name"].astype(str).str.strip().str.lower() == str(en).strip().lower()]
+                        if not row.empty:
+                            r0 = row.iloc[0]
+                            target = str(r0.get("target", "")).strip().lower()
+                            d = str(r0.get("difficulty", "")).strip().lower()
+                            if d:
+                                diff = d
+                    except Exception:
+                        pass
+
+                # Build a compact logical justification
+                if target:
+                    if injury_list and any(inj in target for inj in injury_list):
+                        # This *shouldn't* happen for recommended exercises, but handle defensively.
+                            # recommended because beginner, but NOTE: target overlaps injuries (data inconsistency)
+                        reason = (
+                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}), "
+                            "but {m} ∈ injured_muscle({u}, ·) (should be forbidden)."
+                        ).format(e=en, d=diff, m=target, u=user_id)
+                    else:
+                        reason = (
+                            "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ trains_muscle({e}, {m}) ∧ {m} ∉ injured_muscle({u}, ·)"
+                        ).format(e=en, d=diff, m=target or "target", u=user_id)
+                else:
+                    reason = "is_exercise({e}) ∧ difficulty({e}, {d}) ∧ ¬forbidden({u}, {e})".format(
+                        e=en, d=diff, u=user_id
+                    )
+
+                lines.append('    ✓ recommended({}, "{}") because {}'.format(user_id, en, reason))
+
             if len(exercise_names) > 4:
                 lines.append("    ... +{} more".format(len(exercise_names) - 4))
+
         return lines
