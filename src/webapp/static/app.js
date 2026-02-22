@@ -16,11 +16,53 @@ const profileFocus = document.getElementById("profile-focus");
 const SESSION_KEY = "workout_planner_session_id";
 let sessionId = window.localStorage.getItem(SESSION_KEY) || "";
 
-function addMessage(role, content) {
+function addMessage(role, content, options = {}) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg-wrap msg-wrap-${role}`;
+
   const bubble = document.createElement("article");
   bubble.className = `msg ${role}`;
   bubble.textContent = content;
-  chatLog.appendChild(bubble);
+  wrap.appendChild(bubble);
+
+  if (options.rulesApplied) {
+    const badge = document.createElement("span");
+    badge.className = "rules-badge";
+    badge.textContent = "PyDatalog rules applied";
+    wrap.appendChild(badge);
+  }
+
+  if (options.recommendations?.length) {
+    const list = document.createElement("ul");
+    list.className = "response-list recommendations";
+    options.recommendations.slice(0, 12).forEach((ex) => {
+      const li = document.createElement("li");
+      li.textContent = `${ex.name} — ${ex.target || ex.bodyPart || ""} (${ex.difficulty || ""})`;
+      list.appendChild(li);
+    });
+    wrap.appendChild(list);
+  }
+
+  if (options.plan?.length) {
+    const planEl = document.createElement("div");
+    planEl.className = "response-plan";
+    options.plan.forEach((day) => {
+      const dayBlock = document.createElement("div");
+      dayBlock.className = "plan-day";
+      dayBlock.innerHTML = `<strong>Day ${day.day} — ${day.name}</strong> (${day.focus || ""})`;
+      const ul = document.createElement("ul");
+      (day.exercises || []).forEach((ex) => {
+        const li = document.createElement("li");
+        li.textContent = ex.name || "";
+        ul.appendChild(li);
+      });
+      dayBlock.appendChild(ul);
+      planEl.appendChild(dayBlock);
+    });
+    wrap.appendChild(planEl);
+  }
+
+  chatLog.appendChild(wrap);
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
@@ -71,7 +113,12 @@ async function sendMessage(message) {
     setProfile(payload.profile || {});
     llmBadge.textContent = payload.llm_used ? "LLM: active" : "LLM: fallback";
 
-    addMessage("assistant", payload.reply || "No response from assistant.");
+    const rulesApplied = (payload.recommendations?.length > 0 || payload.plan?.length > 0);
+    addMessage("assistant", payload.reply || "No response from assistant.", {
+      rulesApplied,
+      recommendations: payload.recommendations,
+      plan: payload.plan,
+    });
   } catch (error) {
     addMessage("assistant", `Request error: ${error.message}`);
     llmBadge.textContent = "LLM: unavailable";
@@ -107,7 +154,4 @@ for (const chip of document.querySelectorAll(".chip")) {
   });
 }
 
-addMessage(
-  "assistant",
-  "Tell me your goal, available days, and constraints. I can keep your profile in the database and build a rule-safe workout plan."
-);
+addMessage("assistant", "Enter your prompt above. I use the PyDatalog knowledge base (exercises, your profile, injury-safety rules) to update your profile, recommend safe exercises, or generate a weekly plan.");

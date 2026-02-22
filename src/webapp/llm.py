@@ -31,6 +31,7 @@ class ParsedIntent:
     updates: dict[str, Any] = field(default_factory=dict)
     filters: dict[str, Any] = field(default_factory=dict)
     requested_days: int | None = None
+    remove_injuries: list[str] = field(default_factory=list)
     llm_used: bool = False
 
 
@@ -97,12 +98,15 @@ class LLMIntentParser:
         if updates and intent == "general_chat":
             intent = "update_profile"
 
+        remove_injuries = _sanitize_remove_injuries(payload.get("remove_injuries"))
+
         return ParsedIntent(
             intent=intent,
             assistant_response=assistant_response,
             updates=updates,
             filters=filters,
             requested_days=requested_days,
+            remove_injuries=remove_injuries,
             llm_used=llm_used,
         )
 
@@ -227,14 +231,48 @@ class LLMIntentParser:
         if "beginner" in lowered or "intermediate" in lowered or "advanced" in lowered:
             filters["difficulty"] = updates.get("experience_level")
 
+        remove_injuries: list[str] = []
+        injury_gone_patterns = ("gone", "healed", "better", "no longer", "recovered", "fixed", "cleared")
+        if any(p in lowered for p in injury_gone_patterns):
+            for token, canonical in injury_aliases.items():
+                if token in lowered:
+                    remove_injuries.append(canonical)
+        remove_injuries = list(dict.fromkeys(remove_injuries))
+
         return ParsedIntent(
             intent=intent,
             assistant_response="",
             updates=_sanitize_updates(updates),
             filters=_sanitize_filters(filters),
             requested_days=requested_days,
+            remove_injuries=remove_injuries,
             llm_used=llm_used,
         )
+
+
+def _sanitize_remove_injuries(raw: Any) -> list[str]:
+    """Extract and normalize injury names to remove (canonical form)."""
+    if not isinstance(raw, list):
+        return []
+    canonical = {
+        "shoulder": "shoulder_injury",
+        "knee": "knee_injury",
+        "elbow": "elbow_injury",
+        "wrist": "wrist_injury",
+        "lower back": "lower_back_injury",
+        "ankle": "ankle_injury",
+        "neck": "neck_injury",
+    }
+    result: list[str] = []
+    for item in raw:
+        s = str(item).strip().lower()
+        if not s:
+            continue
+        if s.endswith("_injury"):
+            result.append(s)
+        else:
+            result.append(canonical.get(s, f"{s.replace(' ', '_')}_injury"))
+    return list(dict.fromkeys(result))
 
 
 def _sanitize_updates(raw_updates: Any) -> dict[str, Any]:
@@ -303,11 +341,12 @@ def _sanitize_filters(raw_filters: Any) -> dict[str, Any]:
 
 
 _SYSTEM_PROMPT = """
-You are an intent parser for a workout-planning chat app.
+You are a personal trainer for a workout-planning app. You reason about the user's message and output structured data that drives a PyDatalog rule engine: the engine uses the user's profile (injuries, equipment, level) as rules to forbid unsafe exercises and generate safe plans. Your job is to keep those rules in sync with what the user says and to answer in a supportive, clear, personal-trainer tone.
+
 Return only valid JSON with this exact schema:
 {
   "intent": "general_chat | update_profile | recommend_exercises | generate_plan | show_profile",
-  "assistant_response": "short natural language response",
+  "assistant_response": "short, encouraging response in a personal-trainer voice",
   "updates": {
     "goal": "string",
     "experience_level": "beginner|intermediate|advanced",
@@ -317,6 +356,7 @@ Return only valid JSON with this exact schema:
     "excluded_equipment": ["string"],
     "focus_muscles": ["string"]
   },
+  "remove_injuries": ["canonical injury names to remove from the user's list"],
   "filters": {
     "body_parts": ["string"],
     "targets": ["string"],
@@ -327,12 +367,20 @@ Return only valid JSON with this exact schema:
   "requested_days": 3
 }
 
-Rules:
-- Include only fields supported by the schema.
-- If user asks for a plan, set intent to "generate_plan".
-- If user asks for exercises/recommendations, set intent to "recommend_exercises".
-- If user asks to change preferences, set intent to "update_profile" and fill updates.
-- Normalize injury names to canonical values listed above.
-- Keep assistant_response concise and actionable.
-- Use empty object {} for updates/filters when no values are needed.
+Injury rules (critical for PyDatalog):
+- User says an injury EXISTS (e.g. "I have a shoulder injury", "with a bad knee", "my wrist hurts") → add that injury to "updates.injuries" so the rule engine forbids exercises that stress it. Use canonical names: shoulder_injury, knee_injury, elbow_injury, wrist_injury, lower_back_injury, ankle_injury, neck_injury.
+- User says an injury is GONE or BETTER (e.g. "my shoulder is better", "knee is healed", "no longer have wrist pain", "recovered from ankle injury") → add that injury to "remove_injuries" only. Do NOT put it in "updates.injuries". Example: "My shoulder is all good now" → "remove_injuries": ["shoulder_injury"], "updates": {}.
+- If the user both adds and removes injuries in one message, put new injuries in "updates.injuries" and healed ones in "remove_injuries".
+- Any constraint mentioned in the same message as a question (e.g. "With a shoulder injury, what chest exercises can I do?") must be in "updates" so the engine uses it for this turn.
+
+Personal trainer behavior:
+- assistant_response should be brief, encouraging, and actionable (e.g. "Got it—I've noted your shoulder. Here are chest options that keep the load off it." or "Good to hear your knee is better. I've removed it from your constraints.").
+- When recommending or planning, acknowledge their constraints so they feel heard.
+
+Intent and filters:
+- "Recommend exercises" / "what X exercises?" → intent: "recommend_exercises", set filters (body_parts, targets, equipment, difficulty, limit) from the request.
+- "Generate a plan" / "weekly plan" → intent: "generate_plan"; use requested_days if mentioned.
+- "Update my profile" / "I train 4 days" / "no barbell" → intent: "update_profile" or keep other intent and put constraints in updates.
+- "Show my profile" → intent: "show_profile".
+- Use empty [] or {} where no values apply. Omit "remove_injuries" or use [] when nothing is being removed.
 """.strip()

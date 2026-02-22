@@ -10,7 +10,7 @@
   <div class="app-shell">
     <aside class="profile-panel">
       <h1>Workout Planner</h1>
-      <p class="subtitle">Chat with your planner to update preferences, set injuries, and generate safe plans.</p>
+      <p class="subtitle">Enter a prompt; the system uses PyDatalog knowledge and rules to return safe recommendations and plans.</p>
 
       <div class="profile-card">
         <h2>Session Profile</h2>
@@ -36,24 +36,28 @@
     <main class="chat-panel">
       <header class="chat-header">
         <div>
-          <h2>Coach Chat</h2>
-          <p id="status-text">Connected to planner backend</p>
+          <h2>Knowledge prompt</h2>
+          <p id="status-text">Enter a prompt below. Responses use the PyDatalog knowledge base (injury-safety rules and exercise constraints).</p>
         </div>
         <span id="llm-badge" class="badge">LLM: unknown</span>
       </header>
 
       <section id="chat-log" class="chat-log" aria-live="polite"></section>
 
-      <form id="chat-form" class="composer">
-        <textarea
-          id="chat-input"
-          name="message"
-          placeholder="Ask for a workout plan, update your profile, or request safe exercise recommendations..."
-          rows="2"
-          required
-        ></textarea>
-        <button id="send-btn" type="submit">Send</button>
-      </form>
+      <div class="prompt-section">
+        <label for="chat-input" class="prompt-label">Your prompt</label>
+        <form id="chat-form" class="composer">
+          <textarea
+            id="chat-input"
+            name="message"
+            placeholder="e.g. Recommend beginner back exercises with body weight · Set injuries: knee and wrist · Generate my weekly plan"
+            rows="2"
+            required
+          ></textarea>
+          <button id="send-btn" type="submit">Get response</button>
+        </form>
+        <p class="prompt-hint">Responses are computed using stored facts (exercises, your profile) and PyDatalog rules (e.g. forbidden exercises for injuries).</p>
+      </div>
     </main>
   </div>
 

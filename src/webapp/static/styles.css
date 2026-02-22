@@ -178,8 +178,11 @@ body {
   gap: 12px;
 }
 
+.msg-wrap .msg {
+  max-width: 100%;
+}
+
 .msg {
-  max-width: min(80%, 680px);
   padding: 12px 14px;
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -200,6 +203,72 @@ body {
   border-color: #edc79a;
 }
 
+.msg-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(80%, 680px);
+}
+
+.msg-wrap.user {
+  align-self: flex-end;
+}
+
+.msg-wrap.assistant {
+  align-self: flex-start;
+}
+
+.rules-badge {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--accent-strong);
+  font-family: "IBM Plex Mono", monospace;
+  padding: 4px 8px;
+  background: rgba(0, 122, 111, 0.1);
+  border-radius: 6px;
+  align-self: flex-start;
+}
+
+.response-list.recommendations,
+.response-plan {
+  margin: 0;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 0.9rem;
+}
+
+.response-list.recommendations {
+  list-style: none;
+}
+
+.response-list.recommendations li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.response-list.recommendations li:last-child {
+  border-bottom: none;
+}
+
+.response-plan .plan-day {
+  margin-bottom: 12px;
+}
+
+.response-plan .plan-day:last-child {
+  margin-bottom: 0;
+}
+
+.response-plan .plan-day ul {
+  margin: 6px 0 0 14px;
+  padding: 0;
+}
+
+.response-plan .plan-day li {
+  padding: 2px 0;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -211,9 +280,28 @@ body {
   }
 }
 
-.composer {
+.prompt-section {
   border-top: 1px solid var(--line);
-  padding: 14px;
+  padding: 14px 18px;
+}
+
+.prompt-label {
+  display: block;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.prompt-hint {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.composer {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
@@ -266,7 +354,7 @@ body {
     min-height: 72vh;
   }
 
-  .msg {
+  .msg-wrap {
     max-width: 92%;
   }
 

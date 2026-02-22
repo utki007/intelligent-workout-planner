@@ -37,15 +37,40 @@ class WorkoutChatService:
         self.intent_parser = intent_parser
         self._history: dict[str, list[dict[str, str]]] = defaultdict(list)
 
+    def _merge_constraints_with_profile(
+        self, updates: dict[str, Any], profile: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge list-type constraints from LLM with existing profile so new rules (e.g. injuries) are added to the PyDatalog engine rather than replacing."""
+        for list_key in ("injuries", "excluded_equipment", "focus_muscles"):
+            new_values = updates.get(list_key)
+            if not isinstance(new_values, list) or not new_values:
+                continue
+            existing = list(profile.get(list_key) or [])
+            merged = list(
+                dict.fromkeys(existing + [str(v).strip() for v in new_values if str(v).strip()])
+            )
+            updates[list_key] = merged
+        return updates
+
     def handle_message(self, session_id: str, message: str) -> ChatResult:
         history = self._history[session_id]
         profile = self.repository.get_profile(session_id)
 
         parsed = self.intent_parser.parse(message=message, profile=profile, history=history)
-        updates = parsed.updates.copy()
+        updates = self._merge_constraints_with_profile(parsed.updates.copy(), profile)
 
         if "injuries" in updates:
             updates["injuries"] = self.rule_engine.normalize_injuries(updates.get("injuries", []))
+
+        if getattr(parsed, "remove_injuries", None):
+            to_remove = set(
+                self.rule_engine.normalize_injuries(parsed.remove_injuries),
+            )
+            current_injuries = updates.get(
+                "injuries",
+                list(profile.get("injuries", [])),
+            )
+            updates["injuries"] = [i for i in current_injuries if i not in to_remove]
 
         if updates:
             profile = self.repository.update_profile(session_id, updates)
