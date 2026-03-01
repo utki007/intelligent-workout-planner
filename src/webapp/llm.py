@@ -1,8 +1,9 @@
 """LLM message parser with OpenAI tool-calling for the chat API.
 
 The LLM can call backend tools (exercise search, safety check, injury
-lookup) to gather real data from the database and pyDatalog rule engine
-before producing its structured JSON response.
+lookup, KRR reasoning) to gather real data from the database, pyDatalog
+rule engine, and KRR knowledge base before producing its structured JSON
+response.
 """
 
 from __future__ import annotations
@@ -22,7 +23,16 @@ try:
 except ImportError:  # pragma: no cover - handled at runtime
     OpenAI = None  # type: ignore[assignment]
 
-from .rule_engine import INJURY_TO_RESTRICTED_MUSCLES
+from .rule_engine import INJURY_ALIASES, INJURY_TO_RESTRICTED_MUSCLES
+
+try:
+    from krr.knowledge_base import DEFAULT_RECOVERY_DAYS
+except ImportError:
+    DEFAULT_RECOVERY_DAYS = {
+        "glutes": 2, "quadriceps": 2, "hamstrings": 2,
+        "pectorals": 1, "delts": 1, "traps": 1, "lats": 1,
+        "biceps": 1, "triceps": 1, "calves": 1, "forearms": 0, "abs": 0,
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +48,7 @@ _ALLOWED_INTENTS = {
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ParsedIntent:
     """Structured intent returned by the LLM parser."""
@@ -49,6 +60,24 @@ class ParsedIntent:
     requested_days: int | None = None
     remove_injuries: list[str] = field(default_factory=list)
     llm_used: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers: resolve injury aliases everywhere
+# ---------------------------------------------------------------------------
+
+
+def _resolve_injury_alias(raw: str) -> str | None:
+    """Map a free-text injury mention to its canonical form using INJURY_ALIASES."""
+    key = raw.strip().lower()
+    if not key:
+        return None
+    canonical = INJURY_ALIASES.get(key)
+    if canonical:
+        return canonical
+    if key.endswith("_injury") and key in INJURY_TO_RESTRICTED_MUSCLES:
+        return key
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +142,8 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Search exercises AND filter out any blocked by the user's "
                 "injuries using the pyDatalog rule engine. Returns only safe "
-                "exercises together with counts of candidates vs blocked."
+                "exercises together with counts of candidates vs blocked, plus "
+                "a KRR reasoning trace."
             ),
             "parameters": {
                 "type": "object",
@@ -123,7 +153,8 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "items": {"type": "string"},
                         "description": (
                             "User injuries in canonical form, e.g. "
-                            "['shoulder_injury','knee_injury']"
+                            "['shoulder_injury','knee_injury']. Also accepts "
+                            "aliases like 'shoulder', 'knee pain', etc."
                         ),
                     },
                     "body_parts": {
@@ -160,7 +191,8 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "get_injury_restrictions",
             "description": (
                 "Look up which muscles and body parts are restricted/blocked "
-                "by a given injury. Useful for understanding what to avoid."
+                "by a given injury. Accepts aliases like 'shoulder', "
+                "'knee pain', 'back pain' as well as canonical names."
             ),
             "parameters": {
                 "type": "object",
@@ -168,9 +200,9 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "injury_name": {
                         "type": "string",
                         "description": (
-                            "Canonical injury name: shoulder_injury, "
-                            "knee_injury, elbow_injury, wrist_injury, "
-                            "lower_back_injury, ankle_injury, or neck_injury"
+                            "Injury name — canonical (shoulder_injury, "
+                            "knee_injury, …) or alias (shoulder, knee pain, "
+                            "back pain, …)"
                         ),
                     },
                 },
@@ -184,8 +216,8 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "get_exercise_details",
             "description": (
                 "Get full details about a specific exercise by name, "
-                "including instructions, secondary muscles, and whether "
-                "it is safe for the user's current injuries."
+                "including instructions, secondary muscles, safety check, "
+                "and a KRR explanation of why it is safe or forbidden."
             ),
             "parameters": {
                 "type": "object",
@@ -197,10 +229,76 @@ _TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "injuries": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional user injuries to check safety",
+                        "description": (
+                            "Optional user injuries to check safety "
+                            "(canonical or alias form)"
+                        ),
                     },
                 },
                 "required": ["exercise_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_muscle_recovery_info",
+            "description": (
+                "Return the KRR knowledge base's muscle recovery data — "
+                "how many rest days each muscle group needs between sessions. "
+                "Optionally filter to specific muscles."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "muscles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of muscles to look up, e.g. "
+                            "['glutes','pectorals']. Omit for all muscles."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_krr_reasoning",
+            "description": (
+                "Generate a Knowledge Representation & Reasoning (KRR) "
+                "trace showing pyDatalog-style facts, rules, and inference "
+                "for a set of exercises and injuries. Shows WHY each "
+                "exercise is recommended or forbidden."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "injuries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "User injuries (canonical or alias)",
+                    },
+                    "exercise_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Exercises to reason about. If omitted, searches "
+                            "by body_parts instead."
+                        ),
+                    },
+                    "body_parts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Body parts to search exercises for (used when "
+                            "exercise_names is omitted)"
+                        ),
+                    },
+                },
+                "required": ["injuries"],
             },
         },
     },
@@ -218,8 +316,9 @@ class LLMIntentParser:
 
     When *repository* and *rule_engine* are supplied the parser exposes
     backend tools to the LLM via OpenAI function-calling so the model can
-    query exercises, check safety rules, and look up injury restrictions
-    before producing its structured JSON response.
+    query exercises, check safety rules, look up injury restrictions, and
+    retrieve KRR reasoning traces before producing its structured JSON
+    response.
     """
 
     def __init__(
@@ -229,18 +328,19 @@ class LLMIntentParser:
         repository: WorkoutRepository | None = None,
         rule_engine: WorkoutRuleEngine | None = None,
     ):
+        if OpenAI is None:
+            raise RuntimeError(
+                "The 'openai' package is required. Install it with: pip install openai"
+            )
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is required. Set it in your .env file or environment."
+            )
+
         self.model = model
-        self._client = (
-            OpenAI(api_key=api_key)
-            if (OpenAI is not None and api_key)
-            else None
-        )
+        self._client: OpenAI = OpenAI(api_key=api_key)
         self._repository = repository
         self._rule_engine = rule_engine
-
-    @property
-    def llm_available(self) -> bool:
-        return self._client is not None
 
     @property
     def _tools_available(self) -> bool:
@@ -257,9 +357,6 @@ class LLMIntentParser:
         profile: dict[str, Any],
         history: list[dict[str, str]],
     ) -> ParsedIntent:
-        if self._client is None:
-            return self._fallback_parse(message, llm_used=False)
-
         user_payload = {
             "message": message,
             "profile": profile,
@@ -274,70 +371,95 @@ class LLMIntentParser:
             },
         ]
 
-        try:
-            use_tools = self._tools_available
+        use_tools = self._tools_available
+        logger.info(
+            "[LLM] Calling %s (tools_available=%s) for: %s",
+            self.model, use_tools, message[:120],
+        )
 
-            for _ in range(_MAX_TOOL_ROUNDS):
-                kwargs: dict[str, Any] = {
-                    "model": self.model,
-                    "temperature": 0.1,
-                    "messages": messages,
-                }
-                if use_tools:
-                    kwargs["tools"] = _TOOL_DEFINITIONS
-                else:
-                    kwargs["response_format"] = {"type": "json_object"}
+        for round_num in range(_MAX_TOOL_ROUNDS):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "temperature": 0.1,
+                "messages": messages,
+            }
+            if use_tools:
+                kwargs["tools"] = _TOOL_DEFINITIONS
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
 
-                completion = self._client.chat.completions.create(**kwargs)
-                assistant_msg = completion.choices[0].message
+            completion = self._client.chat.completions.create(**kwargs)
+            assistant_msg = completion.choices[0].message
 
-                if use_tools and assistant_msg.tool_calls:
-                    messages.append(assistant_msg)  # type: ignore[arg-type]
-                    for tool_call in assistant_msg.tool_calls:
-                        fn_name = tool_call.function.name
-                        fn_args = json.loads(tool_call.function.arguments)
-                        result = self._execute_tool(fn_name, fn_args)
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": json.dumps(
-                                    result,
-                                    ensure_ascii=True,
-                                    default=str,
-                                ),
-                            }
-                        )
-                    continue
+            if use_tools and assistant_msg.tool_calls:
+                tool_names = [tc.function.name for tc in assistant_msg.tool_calls]
+                logger.info(
+                    "[LLM] Round %d — model requested %d tool call(s): %s",
+                    round_num + 1, len(assistant_msg.tool_calls),
+                    ", ".join(tool_names),
+                )
+                messages.append(assistant_msg)  # type: ignore[arg-type]
+                for tool_call in assistant_msg.tool_calls:
+                    fn_name = tool_call.function.name
+                    fn_args = json.loads(tool_call.function.arguments)
+                    logger.info(
+                        "[LLM]   → %s(%s)",
+                        fn_name,
+                        json.dumps(fn_args, ensure_ascii=True, default=str),
+                    )
+                    result = self._execute_tool(fn_name, fn_args)
+                    result_summary = json.dumps(result, ensure_ascii=True, default=str)
+                    if len(result_summary) > 300:
+                        result_summary = result_summary[:300] + "…"
+                    logger.info("[LLM]   ← %s", result_summary)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(
+                                result,
+                                ensure_ascii=True,
+                                default=str,
+                            ),
+                        }
+                    )
+                continue
 
-                content = assistant_msg.content or "{}"
-                return self._parse_llm_json(content)
-
-            # Exhausted tool-call rounds — force a final JSON response.
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Provide your final JSON response now, using the "
-                        "schema from the system prompt."
-                    ),
-                }
+            content = assistant_msg.content or "{}"
+            logger.info(
+                "[LLM] Final response received (round %d, %d chars)",
+                round_num + 1, len(content),
             )
-            completion = self._client.chat.completions.create(
-                model=self.model,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-                messages=messages,
+            parsed = self._parse_llm_json(content)
+            logger.info(
+                "[LLM] Parsed intent=%s llm_used=%s",
+                parsed.intent, parsed.llm_used,
             )
-            content = completion.choices[0].message.content or "{}"
-            return self._parse_llm_json(content)
+            return parsed
 
-        except Exception:
-            logger.exception("LLM tool-calling parse failed; falling back to regex")
-            return self._fallback_parse(message, llm_used=False)
+        logger.info("[LLM] Exhausted %d tool-call rounds — forcing final JSON", _MAX_TOOL_ROUNDS)
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Provide your final JSON response now, using the "
+                    "schema from the system prompt."
+                ),
+            }
+        )
+        completion = self._client.chat.completions.create(
+            model=self.model,
+            temperature=0.1,
+            response_format={"type": "json_object"},
+            messages=messages,
+        )
+        content = completion.choices[0].message.content or "{}"
+        parsed = self._parse_llm_json(content)
+        logger.info("[LLM] Forced-final intent=%s", parsed.intent)
+        return parsed
 
     # ------------------------------------------------------------------
-    # Tool execution
+    # Tool execution dispatch
     # ------------------------------------------------------------------
 
     def _execute_tool(self, name: str, arguments: dict[str, Any]) -> Any:
@@ -346,6 +468,8 @@ class LLMIntentParser:
             "get_safe_exercises": self._tool_get_safe_exercises,
             "get_injury_restrictions": self._tool_get_injury_restrictions,
             "get_exercise_details": self._tool_get_exercise_details,
+            "get_muscle_recovery_info": self._tool_get_muscle_recovery_info,
+            "get_krr_reasoning": self._tool_get_krr_reasoning,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -355,6 +479,10 @@ class LLMIntentParser:
         except Exception as exc:
             logger.warning("Tool %s raised: %s", name, exc)
             return {"error": str(exc)}
+
+    # ------------------------------------------------------------------
+    # Tool handlers
+    # ------------------------------------------------------------------
 
     def _tool_search_exercises(self, args: dict[str, Any]) -> dict[str, Any]:
         assert self._repository is not None
@@ -373,7 +501,8 @@ class LLMIntentParser:
 
     def _tool_get_safe_exercises(self, args: dict[str, Any]) -> dict[str, Any]:
         assert self._repository is not None and self._rule_engine is not None
-        injuries = args.get("injuries", [])
+        raw_injuries = args.get("injuries", [])
+        injuries = _normalize_injury_list(raw_injuries)
         limit = min(int(args.get("limit", 10)), 20)
         candidate_limit = max(60, limit * 6)
 
@@ -387,39 +516,61 @@ class LLMIntentParser:
         safe = self._rule_engine.filter_safe_exercises(candidates, injuries)
         blocked_count = len(candidates) - len(safe)
 
+        reasoning = _build_krr_trace(
+            injuries=injuries,
+            exercises=safe[:limit],
+            total_candidates=len(candidates),
+            blocked_count=blocked_count,
+        )
+
         return {
             "total_candidates": len(candidates),
             "blocked_by_injuries": blocked_count,
             "safe_count": len(safe),
             "exercises": [_compact(ex) for ex in safe[:limit]],
+            "krr_reasoning": reasoning,
         }
 
     def _tool_get_injury_restrictions(self, args: dict[str, Any]) -> dict[str, Any]:
-        injury = args.get("injury_name", "").strip().lower()
-        restricted = INJURY_TO_RESTRICTED_MUSCLES.get(injury)
+        raw = args.get("injury_name", "").strip().lower()
+        canonical = _resolve_injury_alias(raw)
+        if canonical is None:
+            canonical = raw.replace(" ", "_")
+            if not canonical.endswith("_injury"):
+                canonical = f"{canonical}_injury"
+
+        restricted = INJURY_TO_RESTRICTED_MUSCLES.get(canonical)
         if restricted is None:
             return {
-                "injury": injury,
+                "injury": raw,
+                "canonical": canonical,
                 "known": False,
-                "message": (
-                    f"Unknown injury '{injury}'. Known injuries: "
-                    f"{list(INJURY_TO_RESTRICTED_MUSCLES.keys())}"
-                ),
+                "known_aliases": list(INJURY_ALIASES.keys()),
+                "known_injuries": list(INJURY_TO_RESTRICTED_MUSCLES.keys()),
             }
+        recovery_info = {
+            m: DEFAULT_RECOVERY_DAYS.get(m)
+            for m in restricted
+            if DEFAULT_RECOVERY_DAYS.get(m) is not None
+        }
         return {
-            "injury": injury,
+            "injury": raw,
+            "canonical": canonical,
             "known": True,
             "restricted_muscles": restricted,
-            "description": (
-                f"{injury} restricts exercises targeting: "
-                f"{', '.join(restricted)}"
+            "muscle_recovery_days": recovery_info,
+            "krr_rule": (
+                f"forbidden_exercise(User, E) ← "
+                f"trains_muscle(E, M) ∧ injured_muscle(User, M) "
+                f"where M ∈ {{{', '.join(restricted)}}}"
             ),
         }
 
     def _tool_get_exercise_details(self, args: dict[str, Any]) -> dict[str, Any]:
         assert self._repository is not None
         name = args.get("exercise_name", "").strip()
-        injuries: list[str] = args.get("injuries", [])
+        raw_injuries: list[str] = args.get("injuries", [])
+        injuries = _normalize_injury_list(raw_injuries)
 
         matches = self._repository.find_exercise_by_name(name)
         if not matches:
@@ -437,26 +588,84 @@ class LLMIntentParser:
             "instructions": match.get("instructions", []),
         }
 
+        target_muscle = match["target"].strip().lower()
+        recovery = DEFAULT_RECOVERY_DAYS.get(target_muscle)
+        if recovery is not None:
+            result["target_recovery_days"] = recovery
+
         if injuries and self._rule_engine is not None:
             safe = self._rule_engine.filter_safe_exercises([match], injuries)
             result["safe_for_user"] = len(safe) > 0
-            if not safe:
-                restricted: set[str] = set()
-                for inj in injuries:
-                    restricted.update(
-                        INJURY_TO_RESTRICTED_MUSCLES.get(inj, [])
-                    )
-                target_muscles = {match["target"].lower()} | {
-                    m.lower() for m in match.get("secondaryMuscles", [])
-                }
-                overlap = restricted & target_muscles
-                if overlap:
-                    result["blocked_reason"] = (
-                        f"Targets {', '.join(sorted(overlap))} which is "
-                        f"restricted by your injuries"
-                    )
+            result["krr_explanation"] = _explain_exercise_krr(
+                match, injuries, is_safe=len(safe) > 0,
+            )
 
         return result
+
+    def _tool_get_muscle_recovery_info(self, args: dict[str, Any]) -> dict[str, Any]:
+        muscles = args.get("muscles")
+        if muscles:
+            filtered = {
+                m.strip().lower(): DEFAULT_RECOVERY_DAYS.get(m.strip().lower())
+                for m in muscles
+            }
+            found = {k: v for k, v in filtered.items() if v is not None}
+            unknown = [k for k, v in filtered.items() if v is None]
+            result: dict[str, Any] = {"recovery_days": found}
+            if unknown:
+                result["unknown_muscles"] = unknown
+                result["available_muscles"] = list(DEFAULT_RECOVERY_DAYS.keys())
+            return result
+        return {"recovery_days": DEFAULT_RECOVERY_DAYS}
+
+    def _tool_get_krr_reasoning(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._repository is not None and self._rule_engine is not None
+        raw_injuries = args.get("injuries", [])
+        injuries = _normalize_injury_list(raw_injuries)
+        exercise_names: list[str] | None = args.get("exercise_names")
+        body_parts: list[str] | None = args.get("body_parts")
+
+        exercises: list[dict[str, Any]] = []
+        if exercise_names:
+            for en in exercise_names:
+                found = self._repository.find_exercise_by_name(en)
+                if found:
+                    exercises.append(found[0])
+        elif body_parts:
+            exercises = self._repository.search_exercises(
+                body_parts=body_parts, limit=20,
+            )
+
+        safe = self._rule_engine.filter_safe_exercises(exercises, injuries)
+        safe_names = {ex["name"] for ex in safe}
+        blocked_count = len(exercises) - len(safe)
+
+        per_exercise: list[dict[str, Any]] = []
+        for ex in exercises:
+            is_safe = ex["name"] in safe_names
+            per_exercise.append({
+                "name": ex["name"],
+                "target": ex.get("target", ""),
+                "safe": is_safe,
+                "explanation": _explain_exercise_krr(ex, injuries, is_safe),
+            })
+
+        trace = _build_krr_trace(
+            injuries=injuries,
+            exercises=exercises,
+            total_candidates=len(exercises),
+            blocked_count=blocked_count,
+        )
+
+        return {
+            "krr_trace": trace,
+            "exercises": per_exercise,
+            "summary": {
+                "total": len(exercises),
+                "safe": len(safe),
+                "blocked": blocked_count,
+            },
+        }
 
     # ------------------------------------------------------------------
     # Response normalisation helpers
@@ -509,135 +718,11 @@ class LLMIntentParser:
             llm_used=llm_used,
         )
 
-    # ------------------------------------------------------------------
-    # Regex fallback (no LLM available)
-    # ------------------------------------------------------------------
-
-    def _fallback_parse(self, message: str, llm_used: bool) -> ParsedIntent:
-        text = message.strip()
-        lowered = text.lower()
-
-        updates: dict[str, Any] = {}
-        filters: dict[str, Any] = {}
-
-        days_match = re.search(r"(\d{1,2})\s*(day|days)", lowered)
-        if days_match:
-            updates["days_per_week"] = int(days_match.group(1))
-
-        minutes_match = re.search(r"(\d{2,3})\s*(min|mins|minute|minutes)", lowered)
-        if minutes_match:
-            updates["session_minutes"] = int(minutes_match.group(1))
-
-        for level in ("beginner", "intermediate", "advanced"):
-            if level in lowered:
-                updates["experience_level"] = level
-                break
-
-        goal_keywords = {
-            "fat loss": ["fat loss", "lose weight", "cut"],
-            "muscle gain": ["build muscle", "muscle gain", "bulk"],
-            "strength": ["strength", "stronger"],
-            "general fitness": ["fitness", "health"],
-        }
-        for goal, patterns in goal_keywords.items():
-            if any(pattern in lowered for pattern in patterns):
-                updates["goal"] = goal
-                break
-
-        detected_injuries: list[str] = []
-        injury_aliases = {
-            "shoulder": "shoulder_injury",
-            "knee": "knee_injury",
-            "elbow": "elbow_injury",
-            "wrist": "wrist_injury",
-            "lower back": "lower_back_injury",
-            "ankle": "ankle_injury",
-            "neck": "neck_injury",
-        }
-        for token, canonical in injury_aliases.items():
-            if token in lowered:
-                detected_injuries.append(canonical)
-
-        if detected_injuries:
-            updates["injuries"] = list(dict.fromkeys(detected_injuries))
-
-        if "without" in lowered or "no equipment" in lowered:
-            if "dumbbell" in lowered:
-                updates["excluded_equipment"] = ["dumbbell"]
-            elif "barbell" in lowered:
-                updates["excluded_equipment"] = ["barbell"]
-
-        body_part_tokens = [
-            "chest", "back", "shoulders", "upper arms", "lower arms",
-            "upper legs", "lower legs", "waist", "cardio", "neck",
-        ]
-        detected_body_parts = [token for token in body_part_tokens if token in lowered]
-        if detected_body_parts:
-            filters["body_parts"] = detected_body_parts
-
-        target_tokens = [
-            "abs", "lats", "biceps", "triceps", "glutes",
-            "hamstrings", "quads", "calves", "pectorals", "delts",
-        ]
-        detected_targets = [token for token in target_tokens if token in lowered]
-        if detected_targets:
-            filters["targets"] = detected_targets
-
-        equipment_tokens = [
-            "body weight", "dumbbell", "barbell", "cable",
-            "kettlebell", "band", "machine",
-        ]
-        detected_equipment = [token for token in equipment_tokens if token in lowered]
-        if detected_equipment:
-            filters["equipment"] = detected_equipment
-
-        limit_match = re.search(r"(\d{1,2})\s*(exercise|exercises|workouts)", lowered)
-        if limit_match:
-            filters["limit"] = int(limit_match.group(1))
-
-        intent = "general_chat"
-        requested_days = None
-
-        if "profile" in lowered:
-            intent = "show_profile"
-        if any(keyword in lowered for keyword in ["plan", "schedule", "weekly"]):
-            intent = "generate_plan"
-            if days_match:
-                requested_days = int(days_match.group(1))
-        elif any(keyword in lowered for keyword in ["recommend", "exercise", "workout"]):
-            intent = "recommend_exercises"
-
-        if updates and intent == "general_chat":
-            intent = "update_profile"
-
-        if "beginner" in lowered or "intermediate" in lowered or "advanced" in lowered:
-            filters["difficulty"] = updates.get("experience_level")
-
-        remove_injuries: list[str] = []
-        injury_gone_patterns = (
-            "gone", "healed", "better", "no longer",
-            "recovered", "fixed", "cleared",
-        )
-        if any(p in lowered for p in injury_gone_patterns):
-            for token, canonical in injury_aliases.items():
-                if token in lowered:
-                    remove_injuries.append(canonical)
-        remove_injuries = list(dict.fromkeys(remove_injuries))
-
-        return ParsedIntent(
-            intent=intent,
-            assistant_response="",
-            updates=_sanitize_updates(updates),
-            filters=_sanitize_filters(filters),
-            requested_days=requested_days,
-            remove_injuries=remove_injuries,
-            llm_used=llm_used,
-        )
-
 
 # ---------------------------------------------------------------------------
 # Compact exercise dict for tool responses (keep token count small)
 # ---------------------------------------------------------------------------
+
 
 def _compact(exercise: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -650,32 +735,163 @@ def _compact(exercise: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Sanitisation helpers (unchanged from original)
+# Injury normalisation helpers (use INJURY_ALIASES everywhere)
 # ---------------------------------------------------------------------------
+
+
+def _normalize_injury_list(raw: list[str]) -> list[str]:
+    """Resolve a list of raw injury strings to canonical names via INJURY_ALIASES."""
+    result: list[str] = []
+    for item in raw:
+        s = item.strip().lower()
+        if not s:
+            continue
+        resolved = _resolve_injury_alias(s)
+        if resolved:
+            result.append(resolved)
+        elif s.endswith("_injury"):
+            result.append(s)
+    return list(dict.fromkeys(result))
+
 
 def _sanitize_remove_injuries(raw: Any) -> list[str]:
     """Extract and normalize injury names to remove (canonical form)."""
     if not isinstance(raw, list):
         return []
-    canonical = {
-        "shoulder": "shoulder_injury",
-        "knee": "knee_injury",
-        "elbow": "elbow_injury",
-        "wrist": "wrist_injury",
-        "lower back": "lower_back_injury",
-        "ankle": "ankle_injury",
-        "neck": "neck_injury",
-    }
     result: list[str] = []
     for item in raw:
         s = str(item).strip().lower()
         if not s:
             continue
-        if s.endswith("_injury"):
+        resolved = _resolve_injury_alias(s)
+        if resolved:
+            result.append(resolved)
+        elif s.endswith("_injury"):
             result.append(s)
         else:
-            result.append(canonical.get(s, f"{s.replace(' ', '_')}_injury"))
+            result.append(f"{s.replace(' ', '_')}_injury")
     return list(dict.fromkeys(result))
+
+
+# ---------------------------------------------------------------------------
+# KRR reasoning helpers (mirrors krr/knowledge_base.py logic without
+# touching global pyDatalog state so it doesn't conflict with rule_engine)
+# ---------------------------------------------------------------------------
+
+
+def _restricted_muscles_for(injuries: list[str]) -> set[str]:
+    """Collect all muscles restricted by a list of canonical injuries."""
+    restricted: set[str] = set()
+    for inj in injuries:
+        restricted.update(
+            m.lower() for m in INJURY_TO_RESTRICTED_MUSCLES.get(inj, [])
+        )
+    return restricted
+
+
+def _exercise_muscles(exercise: dict[str, Any]) -> set[str]:
+    """Return the set of muscles an exercise trains (target + secondary)."""
+    muscles: set[str] = set()
+    target = exercise.get("target", "")
+    if target:
+        muscles.add(target.strip().lower())
+    body_part = exercise.get("bodyPart", "")
+    if body_part:
+        muscles.add(body_part.strip().lower())
+    for m in exercise.get("secondaryMuscles", []) or []:
+        if m and str(m).strip():
+            muscles.add(str(m).strip().lower())
+    return muscles
+
+
+def _explain_exercise_krr(
+    exercise: dict[str, Any],
+    injuries: list[str],
+    is_safe: bool,
+) -> str:
+    """Build a KRR-style explanation for a single exercise (mirrors
+    KnowledgeBase.explain_exercise logic)."""
+    name = exercise.get("name", "?")
+    target = exercise.get("target", "?").strip().lower()
+    difficulty = exercise.get("difficulty", "?").strip().lower()
+    ex_muscles = _exercise_muscles(exercise)
+    restricted = _restricted_muscles_for(injuries)
+    overlap = ex_muscles & restricted
+
+    if not is_safe and overlap:
+        offending = ", ".join(sorted(overlap))
+        involved_injuries = [
+            inj for inj in injuries
+            if set(m.lower() for m in INJURY_TO_RESTRICTED_MUSCLES.get(inj, [])) & overlap
+        ]
+        return (
+            f"forbidden({name}) ← "
+            f"trains_muscle({name}, {{{offending}}}) "
+            f"∧ injured_muscle(user, {{{', '.join(involved_injuries)}}}) "
+            f"⇒ blocked because {offending} is restricted"
+        )
+    return (
+        f"recommended({name}) ← "
+        f"is_exercise({name}) ∧ difficulty({name}, {difficulty}) "
+        f"∧ trains_muscle({name}, {target}) "
+        f"∧ ¬forbidden(user, {name})"
+    )
+
+
+def _build_krr_trace(
+    injuries: list[str],
+    exercises: list[dict[str, Any]],
+    total_candidates: int,
+    blocked_count: int,
+) -> str:
+    """Build a multi-line KRR reasoning trace (mirrors
+    KnowledgeBase.get_krr_reasoning_for_day)."""
+    restricted = _restricted_muscles_for(injuries)
+    lines: list[str] = []
+
+    lines.append("Facts:")
+    if injuries:
+        for inj in injuries:
+            muscles = INJURY_TO_RESTRICTED_MUSCLES.get(inj, [])
+            lines.append(f"  injured_muscle(user, {inj})  → restricts {{{', '.join(muscles)}}}")
+    else:
+        lines.append("  (no injured muscles)")
+    for muscle, days in DEFAULT_RECOVERY_DAYS.items():
+        if muscle in restricted:
+            lines.append(f"  muscle_recovery({muscle}, {days} days)")
+
+    lines.append("")
+    lines.append("Rules:")
+    lines.append("  forbidden(U, E) ← trains_muscle(E, M) ∧ injured_muscle(U, M)")
+    lines.append("  recommended(U, E) ← is_exercise(E) ∧ has_difficulty(E, D) ∧ ¬forbidden(U, E)")
+
+    lines.append("")
+    lines.append("Inference:")
+    lines.append(f"  Candidates: {total_candidates}")
+    lines.append(f"  Blocked:    {blocked_count}")
+    lines.append(f"  Safe:       {total_candidates - blocked_count}")
+
+    if exercises:
+        lines.append("")
+        shown = exercises[:5]
+        for ex in shown:
+            name = ex.get("name", "?")
+            target = ex.get("target", "?")
+            diff = ex.get("difficulty", "?")
+            lines.append(
+                f"  ✓ recommended(user, \"{name}\") ← "
+                f"is_exercise ∧ difficulty={diff} ∧ target={target} "
+                f"∧ ¬forbidden"
+            )
+        if len(exercises) > 5:
+            lines.append(f"  … +{len(exercises) - 5} more")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Sanitisation helpers
+# ---------------------------------------------------------------------------
 
 
 def _sanitize_updates(raw_updates: Any) -> dict[str, Any]:
@@ -748,28 +964,40 @@ def _sanitize_filters(raw_filters: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """
-You are a personal trainer for a workout-planning app backed by an exercise database and a PyDatalog rule engine.
+You are a personal trainer for a workout-planning app backed by an exercise database, a PyDatalog rule engine, and a Knowledge Representation & Reasoning (KRR) knowledge base.
 
-YOU HAVE TOOLS — use them:
-• search_exercises  — query the exercise DB by body part, target muscle, equipment, or difficulty.
-• get_safe_exercises — search AND filter out exercises blocked by the user's injuries (pyDatalog rules). Use this whenever the user has injuries.
-• get_injury_restrictions — look up which muscles an injury restricts.
-• get_exercise_details — full details for a single exercise (instructions, secondary muscles, safety check).
+YOU HAVE TOOLS — use them to ground your response in real data:
+
+• search_exercises — query the exercise DB by body part, target muscle, equipment, or difficulty.
+• get_safe_exercises — search AND filter out exercises blocked by the user's injuries (pyDatalog rules). Returns a KRR reasoning trace.
+• get_injury_restrictions — look up which muscles an injury restricts, including recovery days. Accepts aliases like "shoulder", "knee pain", "back pain".
+• get_exercise_details — full details for a single exercise (instructions, secondary muscles, safety check, KRR explanation).
+• get_muscle_recovery_info — muscle recovery days from the KRR knowledge base (e.g. glutes need 2 days, pectorals need 1).
+• get_krr_reasoning — generate a full KRR reasoning trace (facts → rules → inference) for a set of exercises and injuries. Use this to explain WHY exercises are recommended or forbidden.
 
 WHEN TO CALL TOOLS (important):
-1. User asks for exercise recommendations → call get_safe_exercises (or search_exercises if no injuries) so you can reference real exercises.
-2. User mentions an injury → call get_injury_restrictions to understand what's affected.
+1. User asks for exercise recommendations → call get_safe_exercises (or search_exercises if no injuries).
+2. User mentions an injury → call get_injury_restrictions to understand what's affected, then get_safe_exercises.
 3. User asks about a specific exercise → call get_exercise_details.
-4. User asks for a plan → call get_safe_exercises for each relevant body-part split to see what's available.
-5. You may call MULTIPLE tools in one turn if needed.
+4. User asks for a plan → call get_safe_exercises for each relevant body-part split.
+5. User asks "why?" about a recommendation or restriction → call get_krr_reasoning for the full symbolic trace.
+6. User asks about rest days or recovery → call get_muscle_recovery_info.
+7. You may call MULTIPLE tools in one turn if needed.
 
 Call tools BEFORE writing your final JSON response so your answer is grounded in real data.
+
+KRR CONCEPTS (built into the tools):
+The knowledge base encodes:
+  Facts: is_exercise(E), trains_muscle(E, M), has_difficulty(E, D), injured_muscle(User, M), muscle_recovery(M, Days)
+  Rules: forbidden(U, E) ← trains_muscle(E, M) ∧ injured_muscle(U, M)
+         recommended(U, E) ← is_exercise(E) ∧ has_difficulty(E, D) ∧ ¬forbidden(U, E)
+When you describe reasoning to the user, reference these facts and rules naturally.
 
 FINAL RESPONSE FORMAT:
 After gathering information, return ONLY valid JSON with this schema (no markdown fences):
 {
   "intent": "general_chat | update_profile | recommend_exercises | generate_plan | show_profile",
-  "assistant_response": "short, encouraging response in a personal-trainer voice — you MAY now mention specific exercises you found via tools",
+  "assistant_response": "short, encouraging response in a personal-trainer voice — reference specific exercises and KRR reasoning from tools",
   "updates": {
     "goal": "string",
     "experience_level": "beginner|intermediate|advanced",
@@ -791,15 +1019,15 @@ After gathering information, return ONLY valid JSON with this schema (no markdow
 }
 
 Injury rules (critical for PyDatalog):
-- User says an injury EXISTS (e.g. "I have a shoulder injury", "with a bad knee", "my wrist hurts") → add that injury to "updates.injuries" so the rule engine forbids exercises that stress it. Use canonical names: shoulder_injury, knee_injury, elbow_injury, wrist_injury, lower_back_injury, ankle_injury, neck_injury.
-- User says an injury is GONE or BETTER (e.g. "my shoulder is better", "knee is healed", "no longer have wrist pain", "recovered from ankle injury") → add that injury to "remove_injuries" only. Do NOT put it in "updates.injuries". Example: "My shoulder is all good now" → "remove_injuries": ["shoulder_injury"], "updates": {}.
-- If the user both adds and removes injuries in one message, put new injuries in "updates.injuries" and healed ones in "remove_injuries".
-- Any constraint mentioned in the same message as a question (e.g. "With a shoulder injury, what chest exercises can I do?") must be in "updates" so the engine uses it for this turn.
+- User says an injury EXISTS → add to "updates.injuries" using canonical names: shoulder_injury, knee_injury, elbow_injury, wrist_injury, lower_back_injury, ankle_injury, neck_injury.
+- User says an injury is GONE / BETTER → add to "remove_injuries" only. Do NOT put it in "updates.injuries".
+- If both adding and removing in one message, put new in "updates.injuries" and healed in "remove_injuries".
+- Any constraint in the same message as a question must be in "updates" so the engine uses it for this turn.
 
 Personal trainer behavior:
 - assistant_response should be brief, encouraging, and actionable.
-- Because you have tool access, you CAN reference specific exercises you found.
-- Still speak as if the backend planner makes the final selections; the tool results inform your suggestions.
+- Because you have tool access, reference specific exercises and KRR reasoning you found.
+- When the user asks "why?", include the symbolic reasoning (e.g. "Your shoulder injury restricts delts and pectorals, so exercises targeting those are blocked by the rule: forbidden(U,E) ← trains_muscle(E,M) ∧ injured_muscle(U,M)").
 
 Intent and filters:
 - "Recommend exercises" / "what X exercises?" → intent: "recommend_exercises", set filters from request.
