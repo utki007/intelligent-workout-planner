@@ -21,6 +21,7 @@ class ChatResult:
     recommendations: list[dict[str, Any]] = field(default_factory=list)
     plan: list[dict[str, Any]] = field(default_factory=list)
     llm_used: bool = False
+    pydatalog_output: str = ""
 
 
 class WorkoutChatService:
@@ -78,10 +79,15 @@ class WorkoutChatService:
         recommendations: list[dict[str, Any]] = []
         plan: list[dict[str, Any]] = []
 
+        pydatalog_output = ""
+
         if parsed.intent == "show_profile":
             reply = parsed.assistant_response or self._format_profile(profile)
+            pydatalog_output = self._format_pydatalog_profile_only(profile)
         elif parsed.intent == "recommend_exercises":
-            recommendations = self._recommend_exercises(profile, parsed.filters)
+            recommendations, pydatalog_output = self._recommend_exercises_with_trace(
+                profile, parsed.filters
+            )
             summary = _format_exercise_cards(recommendations)
             if parsed.assistant_response:
                 reply = f"{parsed.assistant_response}\n\n{summary}".strip()
@@ -89,7 +95,9 @@ class WorkoutChatService:
                 reply = summary
         elif parsed.intent == "generate_plan":
             days = parsed.requested_days or profile.get("days_per_week", 3)
-            plan = self._generate_plan(profile, parsed.filters, days)
+            plan, pydatalog_output = self._generate_plan_with_trace(
+                profile, parsed.filters, days
+            )
             summary = _format_plan(plan)
             if parsed.assistant_response:
                 reply = f"{parsed.assistant_response}\n\n{summary}".strip()
@@ -97,11 +105,13 @@ class WorkoutChatService:
                 reply = summary
         elif parsed.intent == "update_profile":
             reply = parsed.assistant_response or self._profile_update_confirmation(profile, updates)
+            pydatalog_output = self._format_pydatalog_profile_only(profile)
         else:
             reply = parsed.assistant_response or (
                 "Share your goal, training level, available days, and any injuries. "
                 "I can update your profile, recommend safe exercises, or build a weekly plan."
             )
+            pydatalog_output = self._format_pydatalog_profile_only(profile)
 
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": reply})
@@ -114,11 +124,27 @@ class WorkoutChatService:
             recommendations=recommendations,
             plan=plan,
             llm_used=parsed.llm_used,
+            pydatalog_output=pydatalog_output,
         )
 
-    def _recommend_exercises(self, profile: dict[str, Any], filters: dict[str, Any]) -> list[dict[str, Any]]:
+    def _format_pydatalog_profile_only(self, profile: dict[str, Any]) -> str:
+        injuries = profile.get("injuries") or []
+        lines = [
+            "Active constraints (used by rules):",
+            "  injured_muscle(user) ← " + (", ".join(injuries) if injuries else "none"),
+            "",
+            "Rules (conceptual):",
+            "  blocked_exercise(U,E) ← user_injury(U,I) & injury_blocks(I,M) & (exercise_target(E,M) | exercise_secondary(E,M) | exercise_body_part(E,M))",
+            "  safe_exercise(U,E) ← candidate(E) & ¬blocked_exercise(U,E)",
+        ]
+        return "\n".join(lines)
+
+    def _recommend_exercises_with_trace(
+        self, profile: dict[str, Any], filters: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str]:
         limit = int(filters.get("limit", 8))
         candidate_limit = max(40, limit * 6)
+        injuries = profile.get("injuries", [])
 
         candidates = self.repository.search_exercises(
             body_parts=filters.get("body_parts"),
@@ -127,15 +153,62 @@ class WorkoutChatService:
             difficulty=filters.get("difficulty") or profile.get("experience_level"),
             limit=candidate_limit,
         )
-
-        safe_candidates = self.rule_engine.filter_safe_exercises(
-            candidates,
-            profile.get("injuries", []),
+        blocked_ids = self.rule_engine.blocked_exercise_ids(candidates, injuries)
+        safe_candidates = self.rule_engine.filter_safe_exercises(candidates, injuries)
+        safe_candidates = self._apply_equipment_exclusions(
+            safe_candidates, profile.get("excluded_equipment", [])
         )
-        safe_candidates = self._apply_equipment_exclusions(safe_candidates, profile.get("excluded_equipment", []))
-        prioritized = self._prioritize_focus_muscles(safe_candidates, profile.get("focus_muscles", []))
+        prioritized = self._prioritize_focus_muscles(
+            safe_candidates, profile.get("focus_muscles", [])
+        )
+        result = [_compact_exercise(exercise) for exercise in prioritized[:limit]]
 
-        return [_compact_exercise(exercise) for exercise in prioritized[:limit]]
+        lines = [
+            "Query: recommend_exercises",
+            "Facts:",
+            "  user_injury(active_user, I) ← I ∈ {" + ", ".join(injuries) + "}" if injuries else "  user_injury(active_user, I) ← (none)",
+            "  candidates: " + str(len(candidates)) + " exercises",
+            "Inference:",
+            "  blocked_exercise(active_user, E): " + str(len(blocked_ids)) + " exercises",
+            "  safe (after rules): " + str(len(safe_candidates)) + " exercises",
+            "Returned: " + str(len(result)) + " exercises",
+        ]
+        if not injuries:
+            lines = [
+                "Query: recommend_exercises",
+                "Facts: user_injury(active_user) = none",
+                "  candidates: " + str(len(candidates)) + " exercises",
+                "Inference: no blocking rules applied.",
+                "Returned: " + str(len(result)) + " exercises",
+            ]
+        pydatalog_output = "\n".join(lines)
+        return result, pydatalog_output
+
+    def _recommend_exercises(self, profile: dict[str, Any], filters: dict[str, Any]) -> list[dict[str, Any]]:
+        recs, _ = self._recommend_exercises_with_trace(profile, filters)
+        return recs
+
+    def _generate_plan_with_trace(
+        self,
+        profile: dict[str, Any],
+        filters: dict[str, Any],
+        requested_days: int,
+    ) -> tuple[list[dict[str, Any]], str]:
+        plan = self._generate_plan(profile, filters, requested_days)
+        injuries = profile.get("injuries", [])
+        lines = [
+            "Query: generate_plan (" + str(len(plan)) + " days)",
+            "Facts: user_injury(active_user, I) ← I ∈ {" + ", ".join(injuries) + "}" if injuries else "Facts: user_injury(active_user) = none",
+            "Rules: blocked_exercise(U,E) as in rule_engine; safe_exercise = candidate ∧ ¬blocked.",
+            "Per day: candidates filtered by rules → safe set → up to 5 exercises in plan.",
+            "",
+            "Plan summary:",
+        ]
+        for day in plan:
+            ex_count = len(day.get("exercises", []))
+            lines.append("  Day " + str(day["day"]) + " (" + day["name"] + "): " + str(ex_count) + " exercises")
+        pydatalog_output = "\n".join(lines)
+        return plan, pydatalog_output
 
     def _generate_plan(
         self,

@@ -250,6 +250,33 @@ class WorkoutRepository:
 
         return [self._row_to_exercise(row) for row in rows]
 
+    def find_exercise_by_name(self, name: str) -> list[dict[str, Any]]:
+        """Find exercises whose name matches (case-insensitive partial match)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, name, body_part, target, secondary_muscles, equipment, "
+                "difficulty, category, description, instructions FROM exercises "
+                "WHERE LOWER(name) LIKE ? ORDER BY name ASC LIMIT 5",
+                (f"%{name.strip().lower()}%",),
+            ).fetchall()
+        return [self._row_to_exercise(row) for row in rows]
+
+    def get_distinct_values(self) -> dict[str, list[str]]:
+        """Return distinct body parts, targets, and equipment in the database."""
+        result: dict[str, list[str]] = {}
+        with self._connect() as conn:
+            for column, key in [
+                ("body_part", "body_parts"),
+                ("target", "targets"),
+                ("equipment", "equipment"),
+                ("difficulty", "difficulties"),
+            ]:
+                rows = conn.execute(
+                    f"SELECT DISTINCT LOWER({column}) AS v FROM exercises WHERE {column} IS NOT NULL AND {column} != '' ORDER BY v"
+                ).fetchall()
+                result[key] = [str(row["v"]) for row in rows]
+        return result
+
     def list_exercises(self, limit: int = 2000) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

@@ -1,17 +1,30 @@
-"""LLM message parser used by the chat API."""
+"""LLM message parser with OpenAI tool-calling for the chat API.
+
+The LLM can call backend tools (exercise search, safety check, injury
+lookup) to gather real data from the database and pyDatalog rule engine
+before producing its structured JSON response.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .database import WorkoutRepository
+    from .rule_engine import WorkoutRuleEngine
 
 try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - handled at runtime
     OpenAI = None  # type: ignore[assignment]
 
+from .rule_engine import INJURY_TO_RESTRICTED_MUSCLES
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_INTENTS = {
     "general_chat",
@@ -21,6 +34,9 @@ _ALLOWED_INTENTS = {
     "show_profile",
 }
 
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ParsedIntent:
@@ -35,16 +51,204 @@ class ParsedIntent:
     llm_used: bool = False
 
 
-class LLMIntentParser:
-    """Converts natural language into planner intents and parameters."""
+# ---------------------------------------------------------------------------
+# OpenAI tool (function-calling) definitions
+# ---------------------------------------------------------------------------
 
-    def __init__(self, model: str = "gpt-4o-mini", api_key: str | None = None):
+_TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_exercises",
+            "description": (
+                "Search the exercise database with optional filters. "
+                "Returns exercises with name, bodyPart, target, equipment, difficulty."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "body_parts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Body-part filter, e.g. ['chest','back','shoulders',"
+                            "'upper legs','lower legs','waist','upper arms',"
+                            "'lower arms','cardio','neck']"
+                        ),
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Target-muscle filter, e.g. ['pectorals','lats',"
+                            "'biceps','triceps','glutes','quads','hamstrings',"
+                            "'delts','abs','calves']"
+                        ),
+                    },
+                    "equipment": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Equipment filter, e.g. ['barbell','dumbbell',"
+                            "'body weight','cable','kettlebell','band','machine']"
+                        ),
+                    },
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["beginner", "intermediate", "advanced"],
+                        "description": "Difficulty level filter",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 10, max 20)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_safe_exercises",
+            "description": (
+                "Search exercises AND filter out any blocked by the user's "
+                "injuries using the pyDatalog rule engine. Returns only safe "
+                "exercises together with counts of candidates vs blocked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "injuries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "User injuries in canonical form, e.g. "
+                            "['shoulder_injury','knee_injury']"
+                        ),
+                    },
+                    "body_parts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Body-part filter",
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Target-muscle filter",
+                    },
+                    "equipment": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Equipment filter",
+                    },
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["beginner", "intermediate", "advanced"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max safe exercises to return (default 10)",
+                    },
+                },
+                "required": ["injuries"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_injury_restrictions",
+            "description": (
+                "Look up which muscles and body parts are restricted/blocked "
+                "by a given injury. Useful for understanding what to avoid."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "injury_name": {
+                        "type": "string",
+                        "description": (
+                            "Canonical injury name: shoulder_injury, "
+                            "knee_injury, elbow_injury, wrist_injury, "
+                            "lower_back_injury, ankle_injury, or neck_injury"
+                        ),
+                    },
+                },
+                "required": ["injury_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_exercise_details",
+            "description": (
+                "Get full details about a specific exercise by name, "
+                "including instructions, secondary muscles, and whether "
+                "it is safe for the user's current injuries."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "exercise_name": {
+                        "type": "string",
+                        "description": "The exercise name to look up",
+                    },
+                    "injuries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional user injuries to check safety",
+                    },
+                },
+                "required": ["exercise_name"],
+            },
+        },
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Parser class
+# ---------------------------------------------------------------------------
+
+_MAX_TOOL_ROUNDS = 6
+
+
+class LLMIntentParser:
+    """Converts natural language into planner intents and parameters.
+
+    When *repository* and *rule_engine* are supplied the parser exposes
+    backend tools to the LLM via OpenAI function-calling so the model can
+    query exercises, check safety rules, and look up injury restrictions
+    before producing its structured JSON response.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
+        repository: WorkoutRepository | None = None,
+        rule_engine: WorkoutRuleEngine | None = None,
+    ):
         self.model = model
-        self._client = OpenAI(api_key=api_key) if (OpenAI is not None and api_key) else None
+        self._client = (
+            OpenAI(api_key=api_key)
+            if (OpenAI is not None and api_key)
+            else None
+        )
+        self._repository = repository
+        self._rule_engine = rule_engine
 
     @property
     def llm_available(self) -> bool:
         return self._client is not None
+
+    @property
+    def _tools_available(self) -> bool:
+        return self._repository is not None and self._rule_engine is not None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def parse(
         self,
@@ -62,21 +266,216 @@ class LLMIntentParser:
             "recent_history": history[-6:],
         }
 
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, ensure_ascii=True),
+            },
+        ]
+
         try:
+            use_tools = self._tools_available
+
+            for _ in range(_MAX_TOOL_ROUNDS):
+                kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "temperature": 0.1,
+                    "messages": messages,
+                }
+                if use_tools:
+                    kwargs["tools"] = _TOOL_DEFINITIONS
+                else:
+                    kwargs["response_format"] = {"type": "json_object"}
+
+                completion = self._client.chat.completions.create(**kwargs)
+                assistant_msg = completion.choices[0].message
+
+                if use_tools and assistant_msg.tool_calls:
+                    messages.append(assistant_msg)  # type: ignore[arg-type]
+                    for tool_call in assistant_msg.tool_calls:
+                        fn_name = tool_call.function.name
+                        fn_args = json.loads(tool_call.function.arguments)
+                        result = self._execute_tool(fn_name, fn_args)
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(
+                                    result,
+                                    ensure_ascii=True,
+                                    default=str,
+                                ),
+                            }
+                        )
+                    continue
+
+                content = assistant_msg.content or "{}"
+                return self._parse_llm_json(content)
+
+            # Exhausted tool-call rounds — force a final JSON response.
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Provide your final JSON response now, using the "
+                        "schema from the system prompt."
+                    ),
+                }
+            )
             completion = self._client.chat.completions.create(
                 model=self.model,
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
-                ],
+                messages=messages,
             )
             content = completion.choices[0].message.content or "{}"
-            parsed = json.loads(content)
-            return self._normalize_result(parsed, llm_used=True)
+            return self._parse_llm_json(content)
+
         except Exception:
+            logger.exception("LLM tool-calling parse failed; falling back to regex")
             return self._fallback_parse(message, llm_used=False)
+
+    # ------------------------------------------------------------------
+    # Tool execution
+    # ------------------------------------------------------------------
+
+    def _execute_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        handlers: dict[str, Any] = {
+            "search_exercises": self._tool_search_exercises,
+            "get_safe_exercises": self._tool_get_safe_exercises,
+            "get_injury_restrictions": self._tool_get_injury_restrictions,
+            "get_exercise_details": self._tool_get_exercise_details,
+        }
+        handler = handlers.get(name)
+        if handler is None:
+            return {"error": f"Unknown tool: {name}"}
+        try:
+            return handler(arguments)
+        except Exception as exc:
+            logger.warning("Tool %s raised: %s", name, exc)
+            return {"error": str(exc)}
+
+    def _tool_search_exercises(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._repository is not None
+        limit = min(int(args.get("limit", 10)), 20)
+        results = self._repository.search_exercises(
+            body_parts=args.get("body_parts"),
+            targets=args.get("targets"),
+            equipment=args.get("equipment"),
+            difficulty=args.get("difficulty"),
+            limit=limit,
+        )
+        return {
+            "count": len(results),
+            "exercises": [_compact(ex) for ex in results],
+        }
+
+    def _tool_get_safe_exercises(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._repository is not None and self._rule_engine is not None
+        injuries = args.get("injuries", [])
+        limit = min(int(args.get("limit", 10)), 20)
+        candidate_limit = max(60, limit * 6)
+
+        candidates = self._repository.search_exercises(
+            body_parts=args.get("body_parts"),
+            targets=args.get("targets"),
+            equipment=args.get("equipment"),
+            difficulty=args.get("difficulty"),
+            limit=candidate_limit,
+        )
+        safe = self._rule_engine.filter_safe_exercises(candidates, injuries)
+        blocked_count = len(candidates) - len(safe)
+
+        return {
+            "total_candidates": len(candidates),
+            "blocked_by_injuries": blocked_count,
+            "safe_count": len(safe),
+            "exercises": [_compact(ex) for ex in safe[:limit]],
+        }
+
+    def _tool_get_injury_restrictions(self, args: dict[str, Any]) -> dict[str, Any]:
+        injury = args.get("injury_name", "").strip().lower()
+        restricted = INJURY_TO_RESTRICTED_MUSCLES.get(injury)
+        if restricted is None:
+            return {
+                "injury": injury,
+                "known": False,
+                "message": (
+                    f"Unknown injury '{injury}'. Known injuries: "
+                    f"{list(INJURY_TO_RESTRICTED_MUSCLES.keys())}"
+                ),
+            }
+        return {
+            "injury": injury,
+            "known": True,
+            "restricted_muscles": restricted,
+            "description": (
+                f"{injury} restricts exercises targeting: "
+                f"{', '.join(restricted)}"
+            ),
+        }
+
+    def _tool_get_exercise_details(self, args: dict[str, Any]) -> dict[str, Any]:
+        assert self._repository is not None
+        name = args.get("exercise_name", "").strip()
+        injuries: list[str] = args.get("injuries", [])
+
+        matches = self._repository.find_exercise_by_name(name)
+        if not matches:
+            return {"found": False, "message": f"No exercise found matching '{name}'"}
+
+        match = matches[0]
+        result: dict[str, Any] = {
+            "found": True,
+            "name": match["name"],
+            "bodyPart": match["bodyPart"],
+            "target": match["target"],
+            "secondaryMuscles": match.get("secondaryMuscles", []),
+            "equipment": match["equipment"],
+            "difficulty": match["difficulty"],
+            "instructions": match.get("instructions", []),
+        }
+
+        if injuries and self._rule_engine is not None:
+            safe = self._rule_engine.filter_safe_exercises([match], injuries)
+            result["safe_for_user"] = len(safe) > 0
+            if not safe:
+                restricted: set[str] = set()
+                for inj in injuries:
+                    restricted.update(
+                        INJURY_TO_RESTRICTED_MUSCLES.get(inj, [])
+                    )
+                target_muscles = {match["target"].lower()} | {
+                    m.lower() for m in match.get("secondaryMuscles", [])
+                }
+                overlap = restricted & target_muscles
+                if overlap:
+                    result["blocked_reason"] = (
+                        f"Targets {', '.join(sorted(overlap))} which is "
+                        f"restricted by your injuries"
+                    )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Response normalisation helpers
+    # ------------------------------------------------------------------
+
+    def _parse_llm_json(self, content: str) -> ParsedIntent:
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group())
+            else:
+                return ParsedIntent(
+                    intent="general_chat",
+                    assistant_response=content.strip(),
+                    llm_used=True,
+                )
+        return self._normalize_result(parsed, llm_used=True)
 
     def _normalize_result(self, payload: dict[str, Any], llm_used: bool) -> ParsedIntent:
         intent = str(payload.get("intent", "general_chat")).strip().lower()
@@ -109,6 +508,10 @@ class LLMIntentParser:
             remove_injuries=remove_injuries,
             llm_used=llm_used,
         )
+
+    # ------------------------------------------------------------------
+    # Regex fallback (no LLM available)
+    # ------------------------------------------------------------------
 
     def _fallback_parse(self, message: str, llm_used: bool) -> ParsedIntent:
         text = message.strip()
@@ -165,45 +568,24 @@ class LLMIntentParser:
                 updates["excluded_equipment"] = ["barbell"]
 
         body_part_tokens = [
-            "chest",
-            "back",
-            "shoulders",
-            "upper arms",
-            "lower arms",
-            "upper legs",
-            "lower legs",
-            "waist",
-            "cardio",
-            "neck",
+            "chest", "back", "shoulders", "upper arms", "lower arms",
+            "upper legs", "lower legs", "waist", "cardio", "neck",
         ]
         detected_body_parts = [token for token in body_part_tokens if token in lowered]
         if detected_body_parts:
             filters["body_parts"] = detected_body_parts
 
         target_tokens = [
-            "abs",
-            "lats",
-            "biceps",
-            "triceps",
-            "glutes",
-            "hamstrings",
-            "quads",
-            "calves",
-            "pectorals",
-            "delts",
+            "abs", "lats", "biceps", "triceps", "glutes",
+            "hamstrings", "quads", "calves", "pectorals", "delts",
         ]
         detected_targets = [token for token in target_tokens if token in lowered]
         if detected_targets:
             filters["targets"] = detected_targets
 
         equipment_tokens = [
-            "body weight",
-            "dumbbell",
-            "barbell",
-            "cable",
-            "kettlebell",
-            "band",
-            "machine",
+            "body weight", "dumbbell", "barbell", "cable",
+            "kettlebell", "band", "machine",
         ]
         detected_equipment = [token for token in equipment_tokens if token in lowered]
         if detected_equipment:
@@ -232,7 +614,10 @@ class LLMIntentParser:
             filters["difficulty"] = updates.get("experience_level")
 
         remove_injuries: list[str] = []
-        injury_gone_patterns = ("gone", "healed", "better", "no longer", "recovered", "fixed", "cleared")
+        injury_gone_patterns = (
+            "gone", "healed", "better", "no longer",
+            "recovered", "fixed", "cleared",
+        )
         if any(p in lowered for p in injury_gone_patterns):
             for token, canonical in injury_aliases.items():
                 if token in lowered:
@@ -249,6 +634,24 @@ class LLMIntentParser:
             llm_used=llm_used,
         )
 
+
+# ---------------------------------------------------------------------------
+# Compact exercise dict for tool responses (keep token count small)
+# ---------------------------------------------------------------------------
+
+def _compact(exercise: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": exercise.get("name"),
+        "bodyPart": exercise.get("bodyPart"),
+        "target": exercise.get("target"),
+        "equipment": exercise.get("equipment"),
+        "difficulty": exercise.get("difficulty"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sanitisation helpers (unchanged from original)
+# ---------------------------------------------------------------------------
 
 def _sanitize_remove_injuries(raw: Any) -> list[str]:
     """Extract and normalize injury names to remove (canonical form)."""
@@ -340,13 +743,33 @@ def _sanitize_filters(raw_filters: Any) -> dict[str, Any]:
     return cleaned
 
 
-_SYSTEM_PROMPT = """
-You are a personal trainer for a workout-planning app. You reason about the user's message and output structured data that drives a PyDatalog rule engine: the engine uses the user's profile (injuries, equipment, level) as rules to forbid unsafe exercises and generate safe plans. Your job is to keep those rules in sync with what the user says and to answer in a supportive, clear, personal-trainer tone.
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
 
-Return only valid JSON with this exact schema:
+_SYSTEM_PROMPT = """
+You are a personal trainer for a workout-planning app backed by an exercise database and a PyDatalog rule engine.
+
+YOU HAVE TOOLS — use them:
+• search_exercises  — query the exercise DB by body part, target muscle, equipment, or difficulty.
+• get_safe_exercises — search AND filter out exercises blocked by the user's injuries (pyDatalog rules). Use this whenever the user has injuries.
+• get_injury_restrictions — look up which muscles an injury restricts.
+• get_exercise_details — full details for a single exercise (instructions, secondary muscles, safety check).
+
+WHEN TO CALL TOOLS (important):
+1. User asks for exercise recommendations → call get_safe_exercises (or search_exercises if no injuries) so you can reference real exercises.
+2. User mentions an injury → call get_injury_restrictions to understand what's affected.
+3. User asks about a specific exercise → call get_exercise_details.
+4. User asks for a plan → call get_safe_exercises for each relevant body-part split to see what's available.
+5. You may call MULTIPLE tools in one turn if needed.
+
+Call tools BEFORE writing your final JSON response so your answer is grounded in real data.
+
+FINAL RESPONSE FORMAT:
+After gathering information, return ONLY valid JSON with this schema (no markdown fences):
 {
   "intent": "general_chat | update_profile | recommend_exercises | generate_plan | show_profile",
-  "assistant_response": "short, encouraging response in a personal-trainer voice",
+  "assistant_response": "short, encouraging response in a personal-trainer voice — you MAY now mention specific exercises you found via tools",
   "updates": {
     "goal": "string",
     "experience_level": "beginner|intermediate|advanced",
@@ -374,13 +797,14 @@ Injury rules (critical for PyDatalog):
 - Any constraint mentioned in the same message as a question (e.g. "With a shoulder injury, what chest exercises can I do?") must be in "updates" so the engine uses it for this turn.
 
 Personal trainer behavior:
-- assistant_response should be brief, encouraging, and actionable (e.g. "Got it—I've noted your shoulder. Here are chest options that keep the load off it." or "Good to hear your knee is better. I've removed it from your constraints.").
-- When recommending or planning, acknowledge their constraints so they feel heard.
+- assistant_response should be brief, encouraging, and actionable.
+- Because you have tool access, you CAN reference specific exercises you found.
+- Still speak as if the backend planner makes the final selections; the tool results inform your suggestions.
 
 Intent and filters:
-- "Recommend exercises" / "what X exercises?" → intent: "recommend_exercises", set filters (body_parts, targets, equipment, difficulty, limit) from the request.
+- "Recommend exercises" / "what X exercises?" → intent: "recommend_exercises", set filters from request.
 - "Generate a plan" / "weekly plan" → intent: "generate_plan"; use requested_days if mentioned.
-- "Update my profile" / "I train 4 days" / "no barbell" → intent: "update_profile" or keep other intent and put constraints in updates.
+- "Update my profile" / "I train 4 days" / "no barbell" → intent: "update_profile".
 - "Show my profile" → intent: "show_profile".
-- Use empty [] or {} where no values apply. Omit "remove_injuries" or use [] when nothing is being removed.
+- Use empty [] or {} where no values apply.
 """.strip()

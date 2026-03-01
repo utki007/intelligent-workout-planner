@@ -8,57 +8,32 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="profile-panel">
-      <h1>Workout Planner</h1>
-      <p class="subtitle">Enter a prompt; the system uses PyDatalog knowledge and rules to return safe recommendations and plans.</p>
-
-      <div class="profile-card">
-        <h2>Session Profile</h2>
-        <dl id="profile-summary">
-          <div><dt>Goal</dt><dd id="profile-goal">general fitness</dd></div>
-          <div><dt>Level</dt><dd id="profile-level">beginner</dd></div>
-          <div><dt>Days / Week</dt><dd id="profile-days">3</dd></div>
-          <div><dt>Minutes</dt><dd id="profile-minutes">45</dd></div>
-          <div><dt>Injuries</dt><dd id="profile-injuries">none</dd></div>
-          <div><dt>No Equipment</dt><dd id="profile-equipment">none</dd></div>
-          <div><dt>Focus</dt><dd id="profile-focus">none</dd></div>
-        </dl>
-      </div>
-
-      <div class="chip-grid">
-        <button class="chip" data-prompt="Set my profile: intermediate, 4 days per week, 50 minutes">Update profile</button>
-        <button class="chip" data-prompt="I have a knee injury and shoulder injury. Update my constraints.">Set injuries</button>
-        <button class="chip" data-prompt="Recommend 8 beginner-friendly back exercises with body weight">Get exercises</button>
-        <button class="chip" data-prompt="Generate my weekly plan">Generate plan</button>
-      </div>
+    <aside class="sidebar sidebar-left">
+      <h1 class="app-title">Workout Planner</h1>
+      <section class="injuries-section">
+        <h2>Current injuries</h2>
+        <p id="injuries-list" class="injuries-list">None</p>
+      </section>
     </aside>
 
-    <main class="chat-panel">
-      <header class="chat-header">
-        <div>
-          <h2>Knowledge prompt</h2>
-          <p id="status-text">Enter a prompt below. Responses use the PyDatalog knowledge base (injury-safety rules and exercise constraints).</p>
-        </div>
-        <span id="llm-badge" class="badge">LLM: unknown</span>
-      </header>
-
+    <main class="main-panel">
       <section id="chat-log" class="chat-log" aria-live="polite"></section>
-
-      <div class="prompt-section">
-        <label for="chat-input" class="prompt-label">Your prompt</label>
-        <form id="chat-form" class="composer">
-          <textarea
-            id="chat-input"
-            name="message"
-            placeholder="e.g. Recommend beginner back exercises with body weight · Set injuries: knee and wrist · Generate my weekly plan"
-            rows="2"
-            required
-          ></textarea>
-          <button id="send-btn" type="submit">Get response</button>
-        </form>
-        <p class="prompt-hint">Responses are computed using stored facts (exercises, your profile) and PyDatalog rules (e.g. forbidden exercises for injuries).</p>
-      </div>
+      <form id="chat-form" class="composer">
+        <textarea
+          id="chat-input"
+          name="message"
+          placeholder="Ask for recommendations, set injuries, or generate a plan..."
+          rows="2"
+          required
+        ></textarea>
+        <button id="send-btn" type="submit">Send</button>
+      </form>
     </main>
+
+    <aside class="sidebar sidebar-right">
+      <h2 class="pydatalog-title">PyDatalog</h2>
+      <pre id="pydatalog-output" class="pydatalog-output">No query yet. Send a message to see rule-engine output.</pre>
+    </aside>
   </div>
 
   <script src="/static/app.js" defer></script>

@@ -34,6 +34,7 @@ class ChatResponse(BaseModel):
     recommendations: list[dict[str, Any]]
     plan: list[dict[str, Any]]
     llm_used: bool
+    pydatalog_output: str = ""
 
 
 class ProfileResponse(BaseModel):
@@ -53,7 +54,12 @@ def _build_chat_service() -> WorkoutChatService:
     repository.initialize()
 
     rule_engine = WorkoutRuleEngine()
-    parser = LLMIntentParser(model=model, api_key=api_key)
+    parser = LLMIntentParser(
+        model=model,
+        api_key=api_key,
+        repository=repository,
+        rule_engine=rule_engine,
+    )
 
     return WorkoutChatService(repository=repository, rule_engine=rule_engine, intent_parser=parser)
 
@@ -105,6 +111,7 @@ def create_app() -> FastAPI:
             recommendations=result.recommendations,
             plan=result.plan,
             llm_used=result.llm_used,
+            pydatalog_output=getattr(result, "pydatalog_output", "") or "",
         )
 
     return application
