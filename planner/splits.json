@@ -1,0 +1,38 @@
+{
+  "3": [
+    { "theme": "Upper Push", "muscles": ["pectorals", "delts", "triceps"] },
+    { "theme": "Upper Pull", "muscles": ["lats", "upper back", "traps", "levator scapulae", "biceps", "forearms"] },
+    { "theme": "Lower + Core", "muscles": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors", "abs"] }
+  ],
+  "4": [
+    { "theme": "Upper Push", "muscles": ["pectorals", "delts", "triceps"] },
+    { "theme": "Upper Pull", "muscles": ["lats", "upper back", "traps", "levator scapulae", "biceps", "forearms"] },
+    { "theme": "Lower", "muscles": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"] },
+    { "theme": "Shoulders + Arms + Core", "muscles": ["delts", "biceps", "triceps", "abs", "forearms"] }
+  ],
+  "5": [
+    { "theme": "Chest", "muscles": ["pectorals"] },
+    { "theme": "Back", "muscles": ["lats", "upper back", "traps", "levator scapulae"] },
+    { "theme": "Legs", "muscles": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"] },
+    { "theme": "Arms", "muscles": ["biceps", "triceps", "forearms"] },
+    { "theme": "Shoulders", "muscles": ["delts"] }
+  ],
+  "6": [
+    { "theme": "Chest", "muscles": ["pectorals"] },
+    { "theme": "Back", "muscles": ["lats", "upper back", "traps", "levator scapulae"] },
+    { "theme": "Legs", "muscles": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"] },
+    { "theme": "Arms", "muscles": ["biceps", "triceps"] },
+    { "theme": "Shoulders", "muscles": ["delts"] },
+    { "theme": "Core + Grip", "muscles": ["abs", "forearms"] }
+  ],
+  "7": [
+    { "theme": "Chest", "muscles": ["pectorals"] },
+    { "theme": "Back", "muscles": ["lats", "upper back", "traps", "levator scapulae"] },
+    { "theme": "Legs", "muscles": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"] },
+    { "theme": "Arms", "muscles": ["biceps", "triceps"] },
+    { "theme": "Shoulders", "muscles": ["delts"] },
+    { "theme": "Core + Grip", "muscles": ["abs", "forearms"] },
+    { "theme": "Full Body (Light)", "muscles": ["pectorals", "lats", "quads", "abs"] }
+  ]
+}
+

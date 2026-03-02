@@ -1,165 +1,121 @@
 """
-KRR-Based Workout Planning System — entry point and example usage.
+Entry point for the Agentic Workout Planner.
 
-Run: python main.py
-
-Example: create or retrieve a user, generate next week's plan, optionally record feedback.
+Creates/loads a user profile, generates a 5-day split (10 exercises total),
+displays KRR reasoning per day, calls Azure OpenAI for explanations,
+and collects end-of-week feedback to update AgentState for next week.
 """
+
+from __future__ import annotations
 
 import os
 import sys
 
-# Ensure project root is on path
+import pandas as pd
+
+# Ensure repo root is on path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from models.user import User
-from models.weekly_plan import day_to_focus
-from data.excel_storage import (
-    get_or_create_user,
-    get_user,
-    save_feedback,
-    update_intensity_from_feedback,
-)
-from planner.weekly_planner import WeeklyPlanner, generate_next_week
+from agent.agent_state import AgentGoals, AgentState
+from agent.llm import LLM
+from agent.mcp import run_plan_cycle
 
 
-def print_plan(plan: dict) -> None:
-    """Print weekly plan with clear, intuitive layout and KRR reasoning."""
-    WIDTH = 62
-    thin = "─" * WIDTH
-    sep = "═" * WIDTH
+# Default user profile with at least one injury so KRR reasoning is visible
+DEFAULT_USER_ID = "default_user"
+DEFAULT_USER_PROFILE = {
+    "user_id": DEFAULT_USER_ID,
+    "name": "Default User",
+    "experience_level": "beginner",
+    "injury_muscles": ["shoulders"],
+}
 
-    sep = "═" * WIDTH
-    print()
-    print(sep)
-    print("  WEEK {}  ·  WORKOUT PLAN".format(plan["week_number"]))
-    print(sep)
 
-    for day in range(1, 6):
-        d = plan["days"][day]
-        focus = d["focus"]
-        print()
-        print("  Day {}  │  {}".format(day, focus))
-        print(thin)
-        print("  Warmup   {}".format(d["warmup"]))
+def _data_dir():
+    return os.path.join(os.path.dirname(__file__), "data")
 
-        if d["exercises"]:
-            print("  Exercises:")
-            for idx, ex in enumerate(d["exercises"], 1):
-                w = ex.get("weight", 0) or 0
-                if w > 0:
-                    detail = "{} sets of {} reps at {} kg".format(ex["sets"], ex["reps"], w)
-                else:
-                    detail = "{} sets of {} reps (bodyweight)".format(ex["sets"], ex["reps"])
-                print("    {}. {} — {}".format(idx, ex["name"], detail))
-        else:
-            print("  — Rest (no exercises; theme conflicts with your profile)")
 
-        print("  Cooldown {}".format(d["cooldown"]))
+def _load_exercises():
+    path = os.path.join(_data_dir(), "exercises_db.xlsx")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Missing {path}. Create data/exercises_db.xlsx (e.g. run scripts/create_exercises_xlsx.py and save as exercises_db.xlsx).")
+    return pd.read_excel(path)
 
-        # KRR reasoning block
-        if d.get("krr"):
-            _print_krr_block(d["krr"])
-        else:
-            _print_krr_fallback(d)
-        print()
 
-    print(sep)
+def main():
+    print("Agentic Workout Planner")
+    print("=" * 60)
+
+    # 1. Create/load user profile (default with one injury)
+    user_id = os.environ.get("WORKOUT_USER_ID", DEFAULT_USER_ID)
+    profile = {
+        "user_id": user_id,
+        "name": os.environ.get("WORKOUT_USER_NAME", DEFAULT_USER_PROFILE["name"]),
+        "experience_level": os.environ.get("WORKOUT_EXPERIENCE", "beginner"),
+        "injury_muscles": DEFAULT_USER_PROFILE["injury_muscles"],
+    }
+    print(f"User: {profile['name']} ({user_id})")
+    print(f"Injuries (avoided in plan): {profile['injury_muscles']}")
     print()
 
+    # 2. Load exercises and state
+    exercises_df = _load_exercises()
+    state = AgentState.get_or_create(user_id)
+    goals = AgentGoals()
 
-def _truncate(s: str, max_len: int) -> str:
-    s = (s or "").strip()
-    return (s[: max_len - 3] + "...") if len(s) > max_len else s
-
-
-def _print_krr_block(krr_lines: list) -> None:
-    """Print full KRR reasoning (Facts, Rules, Inference) with clear formatting."""
-    WIDTH = 62
-    print("  ┌─ KRR Reasoning " + "─" * (WIDTH - 18))
-    for line in krr_lines:
-        print("  │  {}".format(line))
-    print("  └" + "─" * (WIDTH - 3))
-
-
-def _print_krr_fallback(day_plan: dict) -> None:
-    """KRR-style fallback when plan has no krr list."""
-    exercises = day_plan.get("exercises") or []
-    WIDTH = 62
-    n = len(exercises)
-    print("  ┌─ KRR Reasoning " + "─" * (WIDTH - 18))
-    print("  │  Inference: Result = {} exercise(s) (plan loaded without full derivation)".format(n))
-    print("  └" + "─" * (WIDTH - 3))
-
-
-def collect_and_apply_feedback(user_id: str, week_number: int) -> None:
-    """
-    Prompt for feedback and soreness, save to Excel, and update intensity from soreness.
-    High soreness (4-5) → lower intensity next week; low soreness (1-2) → higher intensity.
-    """
-    while True:
-        try:
-            raw = input("  How was this week? (1-5): ").strip()
-            feedback_score = int(raw)
-            if 1 <= feedback_score <= 5:
-                break
-        except ValueError:
-            pass
-        print("  Please enter a number between 1 and 5.")
-
-    while True:
-        try:
-            raw = input("  Soreness level (1-5): ").strip()
-            soreness_level = int(raw)
-            if 1 <= soreness_level <= 5:
-                break
-        except ValueError:
-            pass
-        print("  Please enter a number between 1 and 5.")
-
-    save_feedback(user_id, week_number, feedback_score, soreness_level)
-    update_intensity_from_feedback(user_id, soreness_level)
-    user = get_user(user_id)
-    level = user.current_intensity_level if user else 1
-    print("  Saved. Next week intensity: {}/5".format(level))
-
-
-def example_usage():
-    """Example: one user, generate plan, show output."""
-    user_id = "Utkarsh"
-
-    # Retrieve existing user or create new one
-    user = get_or_create_user(
-        user_id,
-        name="Utkarsh",
-        age=28,
-        weight=75.0,
-        experience_level="beginner",
-        injury_muscles=["delts"],  # avoid shoulder-heavy exercises
-        current_intensity_level=1,
+    # 3. Generate plan via MCP
+    plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = run_plan_cycle(
+        user_id, exercises_df, profile, goals
     )
-    injuries = ", ".join(user.injury_muscles) if user.injury_muscles else "none"
-    print(
-        f"User: {user.name} (id={user.user_id}), "
-        f"age {user.age}, weight {user.weight} kg, level={user.experience_level}, "
-        f"injuries={injuries}, intensity={user.current_intensity_level}/5"
-    )
+    if suggestions:
+        print("Plan suggestions:", suggestions)
+    print()
 
-    plan = generate_next_week(user_id)
-    print_plan(plan)
+    # 4. Display plan with KRR reasoning per day
+    llm = LLM()
+    day_order = sorted(plan.keys())
+    for day in day_order:
+        exercises = plan.get(day, [])
+        theme = day_themes.get(day, day)
+        targets = ", ".join(day_theme_muscles.get(day, [])) or "-"
+        print(f"  {day}  |  {theme}  | targets: {targets}")
+        print("-" * 50)
+        if exercises:
+            for ex in exercises:
+                print(f"  {ex['name']:<30}  {ex['sets']} x {ex['reps']}  (target: {ex.get('target', '-')})")
+        else:
+            print("  Rest day (no recommended exercises for this muscle group).")
+        print("  KRR Reasoning:")
+        for line in (krr_reasoning.get(day, "") or "").split("\n"):
+            print(f"    | {line}")
+        # 5. LLM explanation per day (with KRR context for reasoning)
+        skipped = "All exercises for this day target injured muscles." if not exercises and day == "Day5" else None
+        day_krr = krr_reasoning.get(day, "")
+        explanation = llm.explain_plan(user_id, day, exercises, skipped_reason=skipped, krr_reasoning=day_krr)
+        print(f"  LLM: {explanation}")
+        print()
 
+    # 6. Record this week's volume in state (for next cycle)
+    state.record_week_volume(plan)
+    state.save()
+
+    # 7. Feedback: end-of-week soreness
+    print("=" * 60)
     try:
-        if sys.stdin.isatty():
-            reply = input("  Submit feedback for this week? (y/n): ").strip().lower()
-            if reply in ("y", "yes"):
-                collect_and_apply_feedback(user_id, plan["week_number"])
-        else:
-            print("  (Run in terminal to submit feedback.)")
-    except (EOFError, OSError):
-        print("  (Skipping input — run in terminal to use it.)")
+        raw = input("End-of-week feedback: soreness 1-5 (Enter to skip): ").strip()
+        if raw:
+            soreness = float(raw)
+            if 1 <= soreness <= 5:
+                state.update_from_feedback(overall_soreness=soreness)
+                state.save()
+                print("State updated. Next week's plan will adapt.")
+            else:
+                print("Soreness must be 1-5; skipped.")
+    except EOFError:
+        pass
 
-    return plan
+    print("Done.")
 
 
 if __name__ == "__main__":
-    example_usage()
+    main()
