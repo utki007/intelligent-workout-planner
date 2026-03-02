@@ -20,16 +20,6 @@ function sortedDayLabelsFromPlan(plan) {
 const ONBOARDING_MESSAGE =
   "Hi! I'm your workout coach. I'll ask you a few quick questions here in chat to set up your profile before we generate your plan.";
 
-function isGeneratePlanIntent(text) {
-  const t = (text || '').toLowerCase().trim()
-  return /generate\s*(my\s*)?plan|(my\s*)?plan\s*please|create\s*(my\s*)?plan/.test(t) || t === 'generate plan' || t === 'generate my plan'
-}
-
-function isRecoveryOrChangeIntent(text) {
-  const t = (text || '').toLowerCase().trim()
-  return /recover|healed|better|no longer|changed|update|different|new injury|hurt|pain/.test(t)
-}
-
 export default function App() {
   const [userId, setUserId] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -370,7 +360,7 @@ export default function App() {
     }
   }
 
-  const runGeneratePlan = async (id) => {
+  const runGeneratePlan = async (id, daysPerWeekOverride = null) => {
     const res = await fetch(`${API}/plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -379,10 +369,31 @@ export default function App() {
         name: id,
         experience_level: 'beginner',
         injury_muscles: profile.injury_muscles || [],
+        days_per_week: Number.isInteger(daysPerWeekOverride) ? daysPerWeekOverride : null,
       }),
     })
     if (!res.ok) throw new Error(await res.text())
     return res.json()
+  }
+
+  const resolveIntent = async (id, message) => {
+    const fallback = { intent: 'chat', days_per_week: null, assistant_reply: null }
+    try {
+      const res = await fetch(`${API}/intent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: id, message }),
+      })
+      if (!res.ok) return fallback
+      const data = await res.json()
+      return {
+        intent: data.intent || 'chat',
+        days_per_week: Number.isInteger(data.days_per_week) ? data.days_per_week : null,
+        assistant_reply: typeof data.assistant_reply === 'string' ? data.assistant_reply : null,
+      }
+    } catch {
+      return fallback
+    }
   }
 
   const completeOnboarding = async () => {
@@ -426,28 +437,38 @@ export default function App() {
         setChatLoading(false)
         return
       }
-      // Detect recovery/change intent and suggest updating profile
-      if (isRecoveryOrChangeIntent(msg) && profile.onboarding_complete) {
+      const intentData = await resolveIntent(id, msg)
+      const intent = intentData.intent || 'chat'
+      const requestedDays = intentData.days_per_week
+
+      if (intent === 'profile_update') {
         setChatMessages((prev) => [
           ...prev,
-          { role: 'agent', text: "Sounds like something changed! Open the Profile panel on the left to update your injuries or goals. I'll use the updated info for your next plan." },
+          {
+            role: 'agent',
+            text:
+              intentData.assistant_reply ||
+              "Sounds like something changed! Open the Profile panel on the left to update your injuries or goals. I'll use the updated info for your next plan.",
+          },
         ])
         setSidebarOpen(true)
         setChatLoading(false)
         return
       }
-      if (isGeneratePlanIntent(msg)) {
+      if (intent === 'generate_plan') {
         if (!id) {
           setChatMessages((prev) => [...prev, { role: 'agent', text: 'Enter a User ID first.' }])
           setChatLoading(false)
           return
         }
-        const data = await runGeneratePlan(id)
+        const data = await runGeneratePlan(id, requestedDays)
         const plan = data.plan
         const krrReasoning = data.krr_reasoning || {}
         const dayThemes = data.day_themes || {}
         const suggestions = data.suggestions || []
         let replyText = "Here's your plan. Expand a day to see exercises; tap See Thinking for reasoning."
+        if (requestedDays) replyText = `Here's a ${requestedDays}-day plan. Expand a day to see exercises; tap See Thinking for reasoning.`
+        if (intentData.assistant_reply && !requestedDays) replyText = `${intentData.assistant_reply} ${replyText}`
         if (suggestions.length > 0) replyText += ` Note: ${suggestions.join(' ')}`
         setChatMessages((prev) => [...prev, { role: 'agent', text: replyText, plan, day_themes: dayThemes, krr_reasoning: krrReasoning }])
         setChatLoading(false)

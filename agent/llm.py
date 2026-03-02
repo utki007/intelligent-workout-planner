@@ -10,6 +10,8 @@ Set these to connect the LLM:
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,14 @@ _load_dotenv()
 
 # Lazy import so the app runs without openai installed or configured
 _client: Any = None
+logger = logging.getLogger("workout.llm")
+
+
+def _clip(value: str | None, limit: int = 160) -> str:
+    s = (value or "").strip().replace("\n", " ")
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "..."
 
 
 def _get_client():
@@ -36,17 +46,57 @@ def _get_client():
     try:
         from openai import AzureOpenAI
     except ImportError:
+        logger.warning("llm.client unavailable reason=openai_sdk_missing")
         return None
     key = os.environ.get("AZURE_OPENAI_KEY") or os.environ.get("AZURE_OPENAI_API_KEY")
     endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     if not key or not endpoint:
+        logger.warning(
+            "llm.client unavailable reason=missing_config has_key=%s has_endpoint=%s",
+            bool(key),
+            bool(endpoint),
+        )
         return None
+    requested_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    # This project uses the Chat Completions API shape (`messages`, `response_format`).
+    # Some newer API versions route through Responses and will reject those params.
+    # Prefer a known-good version unless explicitly compatible.
+    api_version = requested_version
+    if str(requested_version).startswith("2025-"):
+        logger.warning("llm.client overriding_unsupported_api_version requested=%s using=%s", requested_version, "2024-02-15-preview")
+        api_version = "2024-02-15-preview"
     _client = AzureOpenAI(
         api_key=key,
         azure_endpoint=endpoint.rstrip("/"),
-        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview"),
+        api_version=api_version,
     )
     return _client
+
+
+def _response_text(response: Any) -> str:
+    """
+    Extract plain text from a Responses API response.
+
+    The OpenAI SDK typically exposes `response.output_text`. If it doesn't,
+    fall back to scanning output items.
+    """
+    if response is None:
+        return ""
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text.strip()
+    output = getattr(response, "output", None)
+    if isinstance(output, list):
+        chunks: list[str] = []
+        for item in output:
+            content = getattr(item, "content", None) if item is not None else None
+            if isinstance(content, list):
+                for c in content:
+                    text = getattr(c, "text", None)
+                    if isinstance(text, str) and text.strip():
+                        chunks.append(text.strip())
+        return "\n".join(chunks).strip()
+    return ""
 
 
 class LLM:
@@ -89,6 +139,7 @@ class LLM:
             Explanation string, or a fallback message if Azure is unavailable or the call fails.
         """
         if not self._client or not self._model:
+            logger.warning("llm.explain_plan unavailable model_configured=%s", bool(self._model))
             return "Explanation unavailable (Azure OpenAI not configured). Set AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_MODEL."
 
         exercise_list = ", ".join(e.get("name", "?") for e in exercises) if exercises else "Rest day."
@@ -106,6 +157,14 @@ class LLM:
         )
 
         try:
+            logger.info(
+                "llm.explain_plan request user_id=%s day=%s exercises=%s has_krr=%s skipped=%s",
+                user_id,
+                day,
+                len(exercises),
+                bool(krr_reasoning),
+                bool(skipped_reason),
+            )
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[
@@ -120,9 +179,11 @@ class LLM:
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
-                return (choice.message.content or "").strip()
+                text = (choice.message.content or "").strip()
+                logger.info("llm.explain_plan success user_id=%s day=%s chars=%s", user_id, day, len(text))
+                return text
         except Exception:
-            pass
+            logger.exception("llm.explain_plan error user_id=%s day=%s", user_id, day)
         return "Explanation unavailable (API error)."
 
     def chat(
@@ -138,6 +199,7 @@ class LLM:
         Optionally include current plan, KRR context, and profile (goals, injuries) for informed answers.
         """
         if not self._client or not self._model:
+            logger.warning("llm.chat unavailable model_configured=%s", bool(self._model))
             return "I can't chat right now — Azure OpenAI isn't configured. Set AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_MODEL in your .env."
 
         context = []
@@ -160,6 +222,14 @@ class LLM:
         user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
 
         try:
+            logger.info(
+                "llm.chat request user_id=%s message=\"%s\" has_plan_summary=%s has_krr_summary=%s has_profile_context=%s",
+                user_id,
+                _clip(user_message, 120),
+                bool(plan_summary),
+                bool(krr_summary),
+                bool(profile_context),
+            )
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[
@@ -171,7 +241,85 @@ class LLM:
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
-                return (choice.message.content or "").strip()
+                text = (choice.message.content or "").strip()
+                logger.info("llm.chat success user_id=%s chars=%s", user_id, len(text))
+                return text
         except Exception:
-            pass
+            logger.exception("llm.chat error user_id=%s", user_id)
         return "Sorry, I couldn't process that. Please try again."
+
+    def resolve_intent(self, user_message: str) -> dict[str, Any]:
+        """
+        Classify the user's message intent and return structured routing hints:
+        {
+          "intent": "generate_plan" | "profile_update" | "chat",
+          "days_per_week": int(3-7) | null,
+          "assistant_reply": str | null
+        }
+        """
+        out = {"intent": "chat", "days_per_week": None, "assistant_reply": None}
+        if not self._client or not self._model:
+            logger.warning("llm.intent unavailable model_configured=%s", bool(self._model))
+            out["assistant_reply"] = (
+                "Intent routing unavailable because Azure OpenAI is not configured. "
+                "Set AZURE_OPENAI_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_MODEL."
+            )
+            return out
+
+        system = (
+            "You classify intent for a workout-planner app.\n"
+            "Return strict JSON only with keys: intent, days_per_week, assistant_reply.\n"
+            "intent must be one of: generate_plan, profile_update, chat.\n"
+            "days_per_week must be an integer 2-7 when explicitly requested, otherwise null.\n"
+            "assistant_reply should be a short sentence for the UI, or null.\n"
+            "Rules:\n"
+            "- If the user asks for a workout split/plan with a specific day count (e.g. '2 day split'), "
+            "intent=generate_plan and days_per_week=<that number>.\n"
+            "- If the user asks to change goals, injuries, intensity, or profile settings without asking to generate now, "
+            "intent=profile_update.\n"
+            "- Otherwise intent=chat.\n"
+            "Examples:\n"
+            "- 'I want a two day workout split for the weekend' -> {\"intent\":\"generate_plan\",\"days_per_week\":2,\"assistant_reply\":\"I'll build a 2-day plan.\"}\n"
+            "- 'I want a three day workout split' -> {\"intent\":\"generate_plan\",\"days_per_week\":3,\"assistant_reply\":\"I'll build a 3-day plan.\"}\n"
+            "- 'Update my injuries, shoulder is better' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I'll use your updated profile for your next plan.\"}\n"
+            "- 'Why this exercise?' -> {\"intent\":\"chat\",\"days_per_week\":null,\"assistant_reply\":null}"
+        )
+        user_content = f"User message: {(user_message or '').strip()}"
+
+        try:
+            logger.info("llm.intent request message=\"%s\"", _clip(user_message, 120))
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.0,
+                max_tokens=120,
+                response_format={"type": "json_object"},
+            )
+            choice = response.choices[0] if response.choices else None
+            if choice and getattr(choice, "message", None):
+                raw = (choice.message.content or "").strip()
+                logger.info("llm.intent raw_response=%s", _clip(raw, 200))
+                parsed = json.loads(raw)
+                intent = str(parsed.get("intent", "chat")).strip().lower()
+                if intent in {"generate_plan", "profile_update", "chat"}:
+                    out["intent"] = intent
+                days = parsed.get("days_per_week")
+                if isinstance(days, (int, float)):
+                    d = int(days)
+                    if 2 <= d <= 7:
+                        out["days_per_week"] = d
+                reply = parsed.get("assistant_reply")
+                if isinstance(reply, str) and reply.strip():
+                    out["assistant_reply"] = reply.strip()
+        except Exception:
+            logger.exception("llm.intent error")
+        logger.info(
+            "llm.intent result intent=%s days_per_week=%s has_reply=%s",
+            out.get("intent"),
+            out.get("days_per_week"),
+            bool(out.get("assistant_reply")),
+        )
+        return out

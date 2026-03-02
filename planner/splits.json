@@ -1,4 +1,8 @@
 {
+  "2": [
+    { "theme": "Full Body (Push focus)", "muscles": ["pectorals", "delts", "triceps", "quads", "abs"] },
+    { "theme": "Full Body (Pull focus)", "muscles": ["lats", "upper back", "biceps", "hamstrings", "glutes"] }
+  ],
   "3": [
     { "theme": "Upper Push", "muscles": ["pectorals", "delts", "triceps"] },
     { "theme": "Upper Pull", "muscles": ["lats", "upper back", "traps", "levator scapulae", "biceps", "forearms"] },

@@ -45,7 +45,7 @@ def get_split(days_per_week: int) -> list[tuple[str, str, list[str]]]:
     """
     splits = load_splits()
     d = int(days_per_week)
-    d = max(3, min(7, d))
+    d = max(2, min(7, d))
     preset = splits.get(str(d)) or splits.get("5") or []
     out: list[tuple[str, str, list[str]]] = []
     for i, day_cfg in enumerate(preset, start=1):
