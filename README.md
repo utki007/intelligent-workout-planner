@@ -92,10 +92,10 @@ npm run dev
 │   ├── decision_policy.py   # DecisionPolicy, PlanEvaluation
 │   ├── mcp.py               # Meta-control: state → goals → plan → evaluate
 │   ├── krr.py               # pyDatalog KB: forbidden/recommended, reasoning
-│   └── llm.py               # Azure OpenAI wrapper (explain_plan)
+│   └── llm.py               # Azure OpenAI wrapper (chat, intent, KB-grounded plan synthesis)
 ├── planner/
-│   ├── weekly_planner.py    # Weekly planner, uses KRR + DecisionPolicy and dynamic splits (3–7 days)
-│   └── splits.json          # JSON presets: for each days_per_week, which body parts to target per day
+│   ├── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (3–7 days)
+│   └── splits.json          # Legacy artifact (no longer used by planner runtime)
 ├── api/
 │   └── app.py               # FastAPI: /api/plan, /api/profile, /api/explanation, /api/feedback, /api/chat
 ├── frontend/                # (legacy; Streamlit UI removed)
@@ -109,15 +109,15 @@ npm run dev
 └── README.md
 ```
 
-## Dynamic Splits (3–7 days)
+## Dynamic Plan Synthesis (3–7 days)
 
-The planner does **not** hardcode a fixed number of days. Instead, it:
+The planner does **not** use hardcoded split presets. Instead, it:
 
-- reads presets from `planner/splits.json`, keyed by `days_per_week` (3–7)
-- for each day defines:
-  - a human‑readable theme (e.g. `"Chest"`, `"Upper Push"`, `"Core + Grip"`)
-  - a list of **target muscles** that must match the `target` values in `exercises_db.xlsx`
-- generates days labeled `Day1`…`DayN` using those presets.
+- builds KRR facts/rules from `exercises_db.xlsx` and user injuries
+- queries KB-recommended exercises (forbidden exercises excluded)
+- encodes a compact evidence payload (`recommended_by_muscle`, rules, injuries)
+- asks the LLM to synthesize a full `Day1…DayN` plan for the requested frequency
+- validates/clamps output to constraints (allowed exercises only, set/rep ranges, max exercises/day).
 
 Only **beginner** exercises are recommended; any exercise that trains a muscle in the user’s **injury list** is **forbidden** (KRR).
 
@@ -126,7 +126,7 @@ Only **beginner** exercises are recommended; any exercise that trains a muscle i
 1. **Memory** — AgentState (soreness per muscle, weekly volume, missed sessions).
 2. **Goals** — AgentGoals (target soreness range 1–3, max sets per muscle per week).
 3. **Decision** — DecisionPolicy adjusts sets/volume and prioritizes muscles.
-4. **Plan** — Weekly planner uses KRR + policy → **N days (3–7)** from `splits.json`, up to 6 exercises per day.
+4. **Plan** — Weekly planner uses KRR evidence + LLM synthesis + policy checks → **N days (3–7)**, up to 6 exercises per day.
 5. **Evaluate** — PlanEvaluation flags overtraining and suggests modifications.
 6. **Feedback** — User reports soreness → state updated → next week adapts.
 

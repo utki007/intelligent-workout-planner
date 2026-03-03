@@ -323,3 +323,80 @@ class LLM:
             bool(out.get("assistant_reply")),
         )
         return out
+
+    def build_weekly_plan(
+        self,
+        user_id: str,
+        profile: dict[str, Any],
+        kb_evidence: dict[str, Any],
+        constraints: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Build a KB-grounded weekly plan as strict JSON.
+        Returns parsed JSON or None on failure/unavailability.
+        """
+        if not self._client or not self._model:
+            logger.warning("llm.plan unavailable model_configured=%s", bool(self._model))
+            return None
+
+        payload = {
+            "user_id": user_id,
+            "profile": profile,
+            "kb_evidence": kb_evidence,
+            "constraints": constraints,
+        }
+        system = (
+            "You are a workout planning model that must produce a weekly plan grounded in provided KB evidence.\n"
+            "Return strict JSON only with this schema:\n"
+            "{\n"
+            '  "days": [\n'
+            "    {\n"
+            '      "day": "Day1",\n'
+            '      "theme": "short day theme",\n'
+            '      "muscles": ["muscle1", "muscle2"],\n'
+            '      "exercises": [\n'
+            '        {"name": "exercise name from kb", "target": "muscle", "sets": 2-4, "reps": 6-20}\n'
+            "      ]\n"
+            "    }\n"
+            "  ],\n"
+            '  "summary": "1-2 sentence rationale"\n'
+            "}\n"
+            "Rules:\n"
+            "- Use ONLY exercises present in kb_evidence.recommended_by_muscle.\n"
+            "- Never include exercises targeting injured muscles.\n"
+            "- Number of day objects must exactly equal constraints.days_per_week.\n"
+            "- Use 3-6 exercises per training day when possible.\n"
+            "- Respect constraints.max_exercises_per_day and rep/set ranges.\n"
+            "- Keep plan coherent with profile goals and days_per_week.\n"
+            "- Do not output markdown. Output JSON only."
+        )
+
+        try:
+            logger.info(
+                "llm.plan request user_id=%s days_per_week=%s goals=%s muscles=%s",
+                user_id,
+                constraints.get("days_per_week"),
+                _clip(str(profile.get("fitness_goals", "")), 80),
+                len((kb_evidence.get("recommended_by_muscle") or {})),
+            )
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(payload)},
+                ],
+                temperature=0.2,
+                max_tokens=1200,
+                response_format={"type": "json_object"},
+            )
+            choice = response.choices[0] if response.choices else None
+            if choice and getattr(choice, "message", None):
+                raw = (choice.message.content or "").strip()
+                logger.info("llm.plan raw_response=%s", _clip(raw, 240))
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    logger.info("llm.plan success user_id=%s days=%s", user_id, len(parsed.get("days") or []))
+                    return parsed
+        except Exception:
+            logger.exception("llm.plan error user_id=%s", user_id)
+        return None

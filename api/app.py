@@ -497,7 +497,7 @@ def generate_plan(profile: ProfileIn):
             requested_days = int(requested_days)
         except (TypeError, ValueError):
             requested_days = None
-        if requested_days is not None and (requested_days < 2 or requested_days > 7):
+        if requested_days is not None and (requested_days < 3 or requested_days > 7):
             requested_days = None
 
     user_profile = {
@@ -508,6 +508,7 @@ def generate_plan(profile: ProfileIn):
         # Respect preferred training frequency unless an override was explicitly requested
         "days_per_week": requested_days or stored_profile.get("days_per_week", 5),
         "intensity": intensity,
+        "fitness_goals": stored_profile.get("fitness_goals", ""),
     }
     plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = run_plan_cycle(
         profile.user_id, df, user_profile, goals=goals
