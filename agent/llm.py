@@ -440,7 +440,7 @@ class LLM:
             "- Use ONLY exercises present in kb_evidence.recommended_by_muscle.\n"
             "- Never include exercises targeting injured muscles.\n"
             "- Number of day objects must exactly equal constraints.days_per_week.\n"
-            "- Use 3-6 exercises per training day when possible.\n"
+            "- Determine exercises per day using both user intensity and per-muscle recovery time: higher-recovery-time muscle groups should get fewer exercises at the same intensity (baseline intensity guide: 1=2-3, 2=4, 3=4-5, 4=5-6, 5=6-7; example at intensity 5: legs may be 5-6 while chest may be 6-7).\n"
             "- Respect constraints.max_exercises_per_day and rep/set ranges.\n"
             "- Keep plan coherent with profile goals and days_per_week.\n"
             "- If repair_feedback exists, fix those exact issues in this output.\n"
