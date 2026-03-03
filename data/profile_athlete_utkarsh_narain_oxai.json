@@ -1,6 +1,6 @@
 {
   "injury_muscles": [
-    "chest"
+    "pectorals"
   ],
   "intensity": 4.0,
   "feedback_history": [
@@ -25,6 +25,11 @@
       "ts": 1772509373,
       "user": "Show my progress",
       "assistant": "Here\u2019s your tracked progress so far:\n- Profile saved: goal='weight loss and muscle gain', days/week=4, injuries=chest.\n- Latest saved plan: 4 days, 21 exercises total.\n- Recovery check-ins: 4 logged (latest 5.0/5, avg 3.75/5).\n- Muscle tracking: 0 muscles with soreness/volume state."
+    },
+    {
+      "ts": 1772580838,
+      "user": "hi",
+      "assistant": "Based on your profile, exercise DB, and KRR rules: Hello! How can I assist you today with your workout plan? If you have any questions or need adjustments, feel free to let me know!"
     }
   ],
   "onboarding_complete": true,

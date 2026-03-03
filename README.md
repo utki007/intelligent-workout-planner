@@ -61,6 +61,12 @@ This creates/loads a default user (with one injury), generates a weekly plan (2â
 1. Start the Python API (from project root):
 
 ```bash
+python api.py
+```
+
+Equivalent explicit command:
+
+```bash
 uvicorn api.app:app --reload --port 8000
 ```
 
