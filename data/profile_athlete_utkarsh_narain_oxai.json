@@ -1,8 +1,7 @@
 {
   "injury_muscles": [
-    "chest",
-    "pectorals",
-    "back"
+    "back",
+    "pectorals"
   ],
   "intensity": 3.5,
   "chat_history": [
@@ -25,9 +24,24 @@
       "ts": 1772517725,
       "user": "hi",
       "assistant": "Based on your profile, exercise DB, and KRR rules: Hello! How can I assist you with your workout plan today? If you have any questions about your current plan or need adjustments, feel free to ask!"
+    },
+    {
+      "ts": 1772519395,
+      "user": "tell me something I dont know",
+      "assistant": "It sounds like you're looking for some new insights! One interesting fact is that incorporating resistance bands into your workouts can help improve muscle activation and stability, especially for those recovering from injuries. They provide a different type of resistance compared to weights, which can be beneficial for your overall strength and muscle gain goals while being gentle on your injured areas. Would you like to explore more about how to effectively use resistance bands in your routine?"
+    },
+    {
+      "ts": 1772519425,
+      "user": "sure, give me link",
+      "assistant": "It seems like you're asking for a link, but I need a bit more context. Are you looking for a link to your workout plan or something else?"
+    },
+    {
+      "ts": 1772519446,
+      "user": "link for resistance band",
+      "assistant": "It seems like you're looking for information about resistance bands. Resistance bands are versatile tools that can be used for various exercises to improve strength and flexibility. If you need specific exercises using resistance bands or have questions about how to incorporate them into your routine, feel free to ask!"
     }
   ],
   "onboarding_complete": true,
   "fitness_goals": "weight loss and muscle gain",
-  "days_per_week": 5
+  "days_per_week": 3
 }

@@ -683,7 +683,23 @@ export default function App() {
     closeProfileUpdateModal()
   }
 
-  const appendSystem = (text) => setChatMessages((prev) => [...prev, { role: 'system', text }])
+  const appendSystem = (text) => {
+    const nextText = String(text || '').trim()
+    if (!nextText) return
+    setChatMessages((prev) => {
+      const last = prev[prev.length - 1]
+      if (last?.role === 'system' && String(last.text || '').trim().toLowerCase() === nextText.toLowerCase()) {
+        return prev
+      }
+      return [...prev, { role: 'system', text: nextText }]
+    })
+  }
+
+  const appendAssistant = (text) => {
+    const nextText = String(text || '').trim()
+    if (!nextText) return
+    setChatMessages((prev) => [...prev, { role: 'assistant', text: nextText }])
+  }
 
   const runGeneratePlan = async (id, daysOverride = null) => {
     const res = await fetch(`${API}/plan`, {
@@ -749,30 +765,37 @@ export default function App() {
     }
   }
 
-  const generatePlan = async (daysOverride = null, source = 'button') => {
+  const generatePlan = async (daysOverride = null, source = 'button', options = {}) => {
     const id = (userId || '').trim()
+    const quiet = Boolean(options?.quiet)
     if (!id) {
-      appendSystem('Select or create an athlete profile first.')
+      if (source === 'chat') appendAssistant('Select or create an athlete profile first, then I can generate your plan.')
+      else appendSystem('Select or create an athlete profile first.')
       return
     }
 
     if (!profile.onboarding_complete) {
-      appendSystem('Complete the onboarding wizard in the left panel first.')
+      if (source === 'chat') appendAssistant('Complete onboarding first so I can personalize your plan safely.')
+      else appendSystem('Complete the onboarding wizard in the left panel first.')
       return
     }
 
     setChatLoading(true)
-    appendSystem('Analyzing soreness and injury constraints…')
+    if (!quiet) {
+      if (source === 'chat') appendAssistant('On it — generating your plan with injury and recovery constraints.')
+      else appendSystem('Analyzing soreness and injury constraints…')
+    }
 
     try {
       const data = await runGeneratePlan(id, daysOverride)
       const days = sortedDayLabelsFromPlan(data.plan || {}).length
       const text = source === 'chat'
-        ? `Plan ready. Built ${days}-day themed schedule with rule validation and adaptation.`
+        ? `Done — I built a ${days}-day plan that matches your profile and safety rules.`
         : `Generated ${days}-day themed plan. Use day tabs on the right to inspect and control each day.`
       publishPlan(data, text)
     } catch (e) {
-      appendSystem(`Plan generation failed: ${e.message || 'Unknown error'}`)
+      if (source === 'chat') appendAssistant(`I couldn't generate the plan just now: ${e.message || 'Unknown error'}`)
+      else appendSystem(`Plan generation failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
     }
@@ -790,7 +813,8 @@ export default function App() {
       const intent = await resolveIntent(id, msg)
 
       if (intent.intent === 'generate_plan') {
-        await generatePlan(intent.days_per_week, 'chat')
+        if (intent.assistant_reply) appendAssistant(intent.assistant_reply)
+        await generatePlan(intent.days_per_week, 'chat', { quiet: true })
         return
       }
 
@@ -1237,72 +1261,86 @@ export default function App() {
             </div>
           )}
 
-          {chatMessages.map((m, idx) => (
-            <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
-              <p className="msg-role">{m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coach AI' : 'System'}</p>
-              <p>{m.text}</p>
-              {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
-              {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
+          {chatMessages.map((m, idx) => {
+            const roleLabel = m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coach AI' : 'System'
+            const roleIcon = m.role === 'user' ? '👤' : m.role === 'assistant' ? '🤖' : 'ℹ️'
+            return (
+              <div key={`${idx}-${m.role}`} className={`msg-row msg-row-${m.role}`}>
+                <div className={`msg-avatar msg-avatar-${m.role}`} aria-hidden>{roleIcon}</div>
+                <div className={`msg msg-${m.role}`}>
+                  <div className="msg-head">
+                    <p className="msg-role">{roleLabel}</p>
+                  </div>
+                  <p>{m.text}</p>
+                  {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
+                  {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
 
-              {m.pendingProfileUpdate && m.pendingProfileStatus === 'pending' && (
-                <p className="detected-update-state muted">Pending profile update — review in modal.</p>
-              )}
-              {m.pendingProfileUpdate && m.pendingProfileStatus === 'applied' && (
-                <p className="detected-update-state success">Saved to profile card.</p>
-              )}
-              {m.pendingProfileUpdate && m.pendingProfileStatus === 'discarded' && (
-                <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
-              )}
-
-              {m.plan && (
-                <div className="plan-summary-card">
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setCollapsedPlanMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
-                  >
-                    {collapsedPlanMsg[idx] ? 'Show summary' : 'Hide summary'}
-                  </button>
-
-                  {!collapsedPlanMsg[idx] && (
-                    <div className="plan-summary-body">
-                      {sortedDayLabelsFromPlan(m.plan).map((d) => (
-                        <div key={d} className="summary-day-card">
-                          <p className="summary-day-head">
-                            <strong>{formatDayLabel(d)}</strong>
-                            <span className="summary-day-theme">{m.day_themes?.[d] || d}</span>
-                          </p>
-                          <ul className="summary-ex-list">
-                            {(m.plan[d] || []).length === 0 && (
-                              <li className="summary-ex-item muted">Rest Day — no injury-safe exercises matched this day.</li>
-                            )}
-                            {(m.plan[d] || []).map((e, exIdx) => (
-                              <li key={`${d}-${e.name}-${exIdx}`} className="summary-ex-item">
-                                {toTitleCase(e.name)}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
+                  {m.pendingProfileUpdate && m.pendingProfileStatus === 'pending' && (
+                    <p className="detected-update-state muted">Pending profile update — review in modal.</p>
+                  )}
+                  {m.pendingProfileUpdate && m.pendingProfileStatus === 'applied' && (
+                    <p className="detected-update-state success">Saved to profile card.</p>
+                  )}
+                  {m.pendingProfileUpdate && m.pendingProfileStatus === 'discarded' && (
+                    <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
                   )}
 
-                  <div className="row gap">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => openExplanationDrawer(selectedDay || sortedDayLabelsFromPlan(m.plan)[0])}
-                    >
-                      View reasoning
-                    </button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>Regenerate selected day</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+                  {m.plan && (
+                    <div className="plan-summary-card">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setCollapsedPlanMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                      >
+                        {collapsedPlanMsg[idx] ? 'Show summary' : 'Hide summary'}
+                      </button>
 
-          {chatLoading && <div className="msg msg-system loading">Thinking …</div>}
+                      {!collapsedPlanMsg[idx] && (
+                        <div className="plan-summary-body">
+                          {sortedDayLabelsFromPlan(m.plan).map((d) => (
+                            <div key={d} className="summary-day-card">
+                              <p className="summary-day-head">
+                                <strong>{formatDayLabel(d)}</strong>
+                                <span className="summary-day-theme">{m.day_themes?.[d] || d}</span>
+                              </p>
+                              <ul className="summary-ex-list">
+                                {(m.plan[d] || []).length === 0 && (
+                                  <li className="summary-ex-item muted">Rest Day — no injury-safe exercises matched this day.</li>
+                                )}
+                                {(m.plan[d] || []).map((e, exIdx) => (
+                                  <li key={`${d}-${e.name}-${exIdx}`} className="summary-ex-item">
+                                    {toTitleCase(e.name)}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="row gap">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => openExplanationDrawer(selectedDay || sortedDayLabelsFromPlan(m.plan)[0])}
+                        >
+                          View reasoning
+                        </button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>Regenerate selected day</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {chatLoading && (
+            <div className="msg-row msg-row-system">
+              <div className="msg-avatar msg-avatar-system" aria-hidden>ℹ️</div>
+              <div className="msg msg-system loading">Thinking …</div>
+            </div>
+          )}
           <div ref={chatEndRef} />
         </div>
 
@@ -1314,6 +1352,7 @@ export default function App() {
           }}
         >
           <input
+            aria-label="Chat with workout planner"
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             placeholder="Ask for a change (e.g. Regenerate Day 2 or make it lower impact)"

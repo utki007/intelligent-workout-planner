@@ -488,13 +488,14 @@ body {
   flex: 1;
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 12px;
+  padding: 14px;
   background: #fcfcfd;
   overflow: auto;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
+  gap: 10px;
+  scroll-padding-bottom: 16px;
 }
 
 .status-strip {
@@ -561,9 +562,62 @@ body {
   font-size: 0.9rem;
   border: 1px solid var(--border);
   animation: fadeIn 0.2s ease;
-  max-width: 85%;
+  max-width: min(85%, 760px);
   width: auto;
   line-height: 1.45;
+}
+
+.msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.msg-row-user {
+  justify-content: flex-end;
+}
+
+.msg-row-user .msg-avatar {
+  order: 2;
+}
+
+.msg-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.76rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.msg-avatar-user {
+  border-color: #cfe1fa;
+  color: #0a4da3;
+  background: #edf5ff;
+}
+
+.msg-avatar-assistant {
+  border-color: #dbe4ef;
+  color: #334155;
+  background: #f8fafc;
+}
+
+.msg-avatar-system {
+  border-color: #e1e1e6;
+  color: #5c5c63;
+  background: #f5f5f7;
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .msg-role {
@@ -582,24 +636,26 @@ body {
 
 .msg-user {
   align-self: flex-end;
-  max-width: 82%;
+  max-width: min(82%, 760px);
   background: var(--blue);
   color: white;
   border-color: transparent;
+  border-bottom-right-radius: 6px;
 }
 
 .msg-assistant {
   align-self: flex-start;
   background: #ffffff;
   border-color: var(--border);
+  border-bottom-left-radius: 6px;
 }
 
 .msg-system {
-  align-self: stretch;
+  align-self: flex-start;
   background: #f5f5f7;
   color: #3a3a3c;
   border-color: #e1e1e6;
-  max-width: 100%;
+  max-width: min(100%, 820px);
   width: auto;
 }
 
@@ -739,10 +795,17 @@ body {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+  align-items: center;
 }
 
 .chat-input-row input {
   font-size: 0.9rem;
+  min-height: 42px;
+}
+
+.chat-input-row .btn {
+  min-height: 42px;
+  min-width: 84px;
 }
 
 .tabs {

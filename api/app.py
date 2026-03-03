@@ -597,6 +597,14 @@ def detect_intent(body: IntentIn):
     reply = payload.get("assistant_reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
+    if reply is None and intent == "generate_plan":
+        reply = (
+            f"Great — I’ll generate your {days}-day plan now."
+            if isinstance(days, int)
+            else "Great — I’ll generate your plan now."
+        )
+    if reply is None and intent == "profile_update":
+        reply = "Got it — I detected a profile update. Please confirm it in the modal."
     logger.info(
         "intent.detect user_id=%s message=\"%s\" intent=%s days_per_week=%s has_reply=%s",
         body.user_id,
@@ -910,6 +918,17 @@ def chat(body: ChatIn):
         )
     except Exception:
         kb_context = None
+
+    history_turns: list[dict[str, str]] = []
+    for entry in (prof.get("chat_history") or [])[-10:]:
+        if not isinstance(entry, dict):
+            continue
+        user_turn = str(entry.get("user", "")).strip()
+        assistant_turn = str(entry.get("assistant", "")).strip()
+        if not user_turn and not assistant_turn:
+            continue
+        history_turns.append({"user": user_turn, "assistant": assistant_turn})
+
     llm = LLM()
     response = llm.chat(
         user_message=body.message,
@@ -917,15 +936,17 @@ def chat(body: ChatIn):
         krr_summary=krr_summary,
         user_id=body.user_id,
         profile_context=(profile_context + ("\n" + kb_context if kb_context else "")) if profile_context else kb_context,
+        conversation_history=history_turns,
     )
     append_chat_turn_to_profile(body.user_id, body.message, response)
     logger.info(
-        "chat.reply user_id=%s message=\"%s\" onboarding=%s plan_summary=%s krr_summary=%s response_chars=%s",
+        "chat.reply user_id=%s message=\"%s\" onboarding=%s plan_summary=%s krr_summary=%s history_turns=%s response_chars=%s",
         body.user_id,
         _clip(body.message, 120),
         prof.get("onboarding_complete"),
         bool(plan_summary),
         bool(krr_summary),
+        len(history_turns),
         len(response or ""),
     )
     return ChatOut(response=response)

@@ -193,6 +193,7 @@ class LLM:
         krr_summary: str | None = None,
         user_id: str | None = None,
         profile_context: str | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
     ) -> str:
         """
         Respond as the workout agent to a free-form user message (e.g. chat).
@@ -221,23 +222,34 @@ class LLM:
             "If context is missing or ambiguous, ask one concise clarifying question instead of guessing. "
             "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names."
         )
-        user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
+        context_message = "\n".join(context).strip()
+        messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+        if context_message:
+            messages.append({"role": "system", "content": f"Session context:\n{context_message}"})
+
+        for turn in (conversation_history or [])[-8:]:
+            user_turn = str(turn.get("user", "")).strip()[:500]
+            assistant_turn = str(turn.get("assistant", "")).strip()[:900]
+            if user_turn:
+                messages.append({"role": "user", "content": user_turn})
+            if assistant_turn:
+                messages.append({"role": "assistant", "content": assistant_turn})
+
+        messages.append({"role": "user", "content": (user_message or "").strip()})
 
         try:
             logger.info(
-                "llm.chat request user_id=%s message=\"%s\" has_plan_summary=%s has_krr_summary=%s has_profile_context=%s",
+                "llm.chat request user_id=%s message=\"%s\" has_plan_summary=%s has_krr_summary=%s has_profile_context=%s history_turns=%s",
                 user_id,
                 _clip(user_message, 120),
                 bool(plan_summary),
                 bool(krr_summary),
                 bool(profile_context),
+                len(conversation_history or []),
             )
             response = self._client.chat.completions.create(
                 model=self._model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ],
+                messages=messages,
                 temperature=0.4,
                 max_tokens=300,
             )
