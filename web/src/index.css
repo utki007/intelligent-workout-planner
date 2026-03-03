@@ -260,6 +260,24 @@ body {
   gap: 6px;
 }
 
+.injury-filter-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.injury-filter-group {
+  display: grid;
+  gap: 5px;
+}
+
+.injury-filter-title {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .chip {
   border: 1px solid var(--border);
   border-radius: 999px;

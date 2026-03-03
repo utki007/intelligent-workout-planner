@@ -1,0 +1,15 @@
+{
+  "injury_muscles": [
+    "abductors",
+    "adductors",
+    "calves",
+    "glutes",
+    "hamstrings"
+  ],
+  "intensity": 4.0,
+  "feedback_history": [],
+  "chat_history": [],
+  "onboarding_complete": true,
+  "fitness_goals": "Build Muscle",
+  "days_per_week": 2
+}

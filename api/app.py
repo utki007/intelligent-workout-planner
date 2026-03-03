@@ -24,7 +24,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.agent_state import AgentGoals, AgentState
-from agent.krr import load_kb, query_recommended
+from agent.krr import (
+    JOINT_ALIASES,
+    JOINT_MUSCLE_MAP,
+    MUSCLE_ALIASES,
+    MUSCLE_GROUP_EXPANSIONS,
+    load_kb,
+    normalize_injury_muscles,
+    query_recommended,
+)
 from agent.llm import LLM
 from agent.mcp import run_plan_cycle
 from agent.reliability_metrics import get_metrics
@@ -132,7 +140,7 @@ def save_profile(
     """Update and persist profile. Merges with existing."""
     prof = load_profile(user_id)
     if injury_muscles is not None:
-        prof["injury_muscles"] = injury_muscles
+        prof["injury_muscles"] = sorted(normalize_injury_muscles(injury_muscles))
     if intensity is not None:
         prof["intensity"] = max(1, min(5, float(intensity)))
     if onboarding_complete is not None:
@@ -276,10 +284,25 @@ class IntentIn(BaseModel):
     message: str
 
 
+class IntentInjuryUpdateOut(BaseModel):
+    status: Literal["injured", "recovered", "cleared", "unknown"] | None = None
+    operation: Literal["add", "remove", "clear", "set", "none"] | None = None
+    muscles: list[str] = []
+
+
+class IntentProfileUpdatesOut(BaseModel):
+    injury_muscles: list[str] | None = None
+    injury_update: IntentInjuryUpdateOut | None = None
+    intensity: float | None = None
+    fitness_goals: str | None = None
+    days_per_week: int | None = None
+
+
 class IntentOut(BaseModel):
     intent: Literal["generate_plan", "profile_update", "chat"]
     days_per_week: int | None = None
     assistant_reply: str | None = None
+    profile_updates: IntentProfileUpdatesOut | None = None
 
 
 REASONING_EXPLAINED = """
@@ -431,6 +454,212 @@ def _heuristic_intent(message: str) -> tuple[str, int | None]:
     return "chat", days_hint
 
 
+def _extract_muscles_from_text(message: str) -> list[str]:
+    text = (message or "").strip().lower()
+    if not text:
+        return []
+    known_terms = {
+        "abs",
+        "abductors",
+        "adductors",
+        "ankle",
+        "ankles",
+        "biceps",
+        "calves",
+        "chest",
+        "delts",
+        "elbow",
+        "elbows",
+        "forearms",
+        "glutes",
+        "hamstrings",
+        "hip",
+        "hips",
+        "knee",
+        "knees",
+        "lats",
+        "legs",
+        "pectorals",
+        "quads",
+        "shoulder",
+        "shoulders",
+        "spine",
+        "traps",
+        "triceps",
+        "upper back",
+        "wrist",
+        "wrists",
+    }
+    known_terms.update(str(k).strip().lower() for k in JOINT_MUSCLE_MAP.keys())
+    known_terms.update(str(k).strip().lower() for k in JOINT_ALIASES.keys())
+    known_terms.update(str(k).strip().lower() for k in MUSCLE_ALIASES.keys())
+    known_terms.update(str(v).strip().lower() for v in MUSCLE_ALIASES.values())
+    known_terms.update(str(k).strip().lower() for k in MUSCLE_GROUP_EXPANSIONS.keys())
+    for expanded in MUSCLE_GROUP_EXPANSIONS.values():
+        for term in expanded:
+            known_terms.add(str(term).strip().lower())
+
+    matched_raw: list[str] = []
+    for term in sorted(known_terms, key=len, reverse=True):
+        if term and re.search(rf"\b{re.escape(term)}\b", text):
+            matched_raw.append(term)
+    return sorted(normalize_injury_muscles(matched_raw))
+
+
+def _apply_injury_operation(current_injuries: list[str], operation: str, muscles: list[str]) -> list[str]:
+    current = set(normalize_injury_muscles(current_injuries))
+    parsed = set(normalize_injury_muscles(muscles))
+    op = str(operation or "").strip().lower()
+
+    if op == "clear":
+        return []
+    if op == "set":
+        return sorted(parsed)
+    if op == "remove":
+        return sorted(current - parsed)
+    if op == "add":
+        return sorted(current | parsed)
+    return sorted(current)
+
+
+def _coerce_profile_updates_from_intent_payload(
+    payload_updates: dict | None,
+    current_profile: dict,
+    message: str,
+) -> dict:
+    if not isinstance(payload_updates, dict):
+        return {}
+
+    updates: dict = {}
+
+    # Structured scalar profile fields
+    days = payload_updates.get("days_per_week")
+    if isinstance(days, (int, float)):
+        day_int = int(days)
+        if MIN_DAYS_PER_WEEK <= day_int <= MAX_DAYS_PER_WEEK:
+            updates["days_per_week"] = day_int
+
+    intensity = payload_updates.get("intensity")
+    if isinstance(intensity, (int, float)):
+        i = float(intensity)
+        if 1.0 <= i <= 5.0:
+            updates["intensity"] = i
+
+    goals = payload_updates.get("fitness_goals")
+    if isinstance(goals, str) and goals.strip():
+        updates["fitness_goals"] = goals.strip()
+
+    # Injury update semantics
+    current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
+    injury_raw = payload_updates.get("injury_update")
+    injury_payload = injury_raw if isinstance(injury_raw, dict) else {}
+    status = str(injury_payload.get("status", "")).strip().lower()
+    if status not in {"injured", "recovered", "cleared", "unknown"}:
+        status = ""
+    operation = str(injury_payload.get("operation", "")).strip().lower()
+    if operation not in {"add", "remove", "clear", "set", "none"}:
+        operation = ""
+    muscles_raw = injury_payload.get("muscles")
+    parsed_muscles: list[str] = []
+    if isinstance(muscles_raw, list):
+        parsed_muscles = sorted(normalize_injury_muscles([str(m).strip().lower() for m in muscles_raw]))
+
+    if not parsed_muscles:
+        parsed_muscles = _extract_muscles_from_text(message)
+
+    if not operation and status == "injured":
+        operation = "add"
+    elif not operation and status == "recovered":
+        operation = "remove"
+    elif not operation and status == "cleared":
+        operation = "clear"
+
+    direct_injury_list = payload_updates.get("injury_muscles")
+    if isinstance(direct_injury_list, list):
+        canonical = sorted(normalize_injury_muscles([str(m).strip().lower() for m in direct_injury_list]))
+        updates["injury_muscles"] = canonical
+        if operation in {"", "none"}:
+            operation = "set"
+            parsed_muscles = canonical
+
+    if operation and operation != "none":
+        updates["injury_muscles"] = _apply_injury_operation(current_injuries, operation, parsed_muscles)
+        updates["injury_update"] = {
+            "status": status or "unknown",
+            "operation": operation,
+            "muscles": parsed_muscles,
+        }
+
+    return updates
+
+
+def _heuristic_profile_updates(message: str, current_profile: dict) -> dict:
+    text = (message or "").strip().lower()
+    if not text:
+        return {}
+
+    updates: dict = {}
+
+    days_hint = _extract_days_hint(text)
+    if days_hint is not None:
+        updates["days_per_week"] = days_hint
+
+    intensity_match = re.search(r"\bintensity\b[^\d]*([1-5](?:\.\d)?)\b", text)
+    if intensity_match:
+        try:
+            intensity = float(intensity_match.group(1))
+            updates["intensity"] = max(1.0, min(5.0, intensity))
+        except (TypeError, ValueError):
+            pass
+
+    goal_match = re.search(r"\b(goals?|goal)\s*(are|is|to)?\s*[:\-]?\s*(.+)$", text)
+    if goal_match and goal_match.group(3):
+        goals = goal_match.group(3).strip()
+        if len(goals) >= 4:
+            updates["fitness_goals"] = goals
+
+    current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
+    muscles = _extract_muscles_from_text(text)
+
+    clear_all = bool(
+        re.search(
+            r"\b(no injuries|not injured|fully recovered|all recovered|injury[\s-]?free|clear all injuries)\b",
+            text,
+        )
+    )
+    recovery_signal = bool(
+        re.search(r"\b(recovered|healed|better|pain[\s-]?free|no pain|no longer hurt|fixed)\b", text)
+    )
+    injury_signal = bool(
+        re.search(r"\b(injured|injury|hurt|pain|strained|strain|pulled|tear|tore|sprain|sore)\b", text)
+    )
+    remove_signal = bool(re.search(r"\b(remove|delete|drop|clear)\b", text))
+    add_signal = bool(re.search(r"\b(add|include|mark)\b", text))
+
+    operation = ""
+    status = ""
+    if clear_all:
+        operation = "clear"
+        status = "cleared"
+        muscles = []
+    elif muscles and (remove_signal or recovery_signal):
+        operation = "remove"
+        status = "recovered"
+    elif muscles and (add_signal or injury_signal):
+        operation = "add"
+        status = "injured"
+
+    if operation:
+        updates["injury_muscles"] = _apply_injury_operation(current_injuries, operation, muscles)
+        updates["injury_update"] = {
+            "status": status,
+            "operation": operation,
+            "muscles": muscles,
+        }
+
+    return updates
+
+
 def _summarize_saved_plan(plan: dict) -> str | None:
     if not plan:
         return None
@@ -555,6 +784,21 @@ def get_profile(user_id: str = Query(..., description="User ID")):
     return prof
 
 
+@app.get("/api/injury-map")
+def get_injury_map():
+    """Return KB-backed injury filter mapping for frontend joint/muscle selectors."""
+    joints = {joint: list(muscles) for joint, muscles in JOINT_MUSCLE_MAP.items()}
+    muscles: list[str] = []
+    seen: set[str] = set()
+    for values in joints.values():
+        for muscle in values:
+            m = str(muscle).strip().lower()
+            if m and m not in seen:
+                seen.add(m)
+                muscles.append(m)
+    return {"joints": joints, "muscles": muscles}
+
+
 @app.put("/api/profile")
 def update_profile(body: ProfileUpdateIn):
     """Save profile fields: injuries, intensity, onboarding data."""
@@ -580,7 +824,8 @@ def update_profile(body: ProfileUpdateIn):
 
 @app.post("/api/intent", response_model=IntentOut)
 def detect_intent(body: IntentIn):
-    """Resolve user message intent so frontend behavior doesn't rely on local regex logic."""
+    """Resolve chat intent and structured profile updates from one backend source of truth."""
+    current_profile = load_profile(body.user_id or "default")
     payload = resolve_intent(body.message) or {}
     intent = payload.get("intent", "chat")
     if intent not in {"generate_plan", "profile_update", "chat"}:
@@ -617,18 +862,54 @@ def detect_intent(body: IntentIn):
     if intent == "generate_plan" and days is None and heuristic_days is not None:
         days = heuristic_days
 
+    profile_updates = _coerce_profile_updates_from_intent_payload(
+        payload.get("profile_updates"),
+        current_profile=current_profile,
+        message=body.message,
+    )
+    heuristic_updates = _heuristic_profile_updates(body.message, current_profile)
+    if not profile_updates:
+        profile_updates = heuristic_updates
+    elif heuristic_updates:
+        for key, value in heuristic_updates.items():
+            if key not in profile_updates:
+                profile_updates[key] = value
+
+    if intent == "chat" and profile_updates and heuristic_intent != "generate_plan":
+        intent = "profile_update"
+    if intent == "generate_plan" and days is None and isinstance(profile_updates.get("days_per_week"), int):
+        days = int(profile_updates["days_per_week"])
+
     reply = payload.get("assistant_reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
+    if reply is None and intent == "profile_update" and profile_updates:
+        injury_update = profile_updates.get("injury_update") or {}
+        status = injury_update.get("status")
+        if status == "recovered":
+            reply = "I detected an injury recovery update. Confirm to save it."
+        elif status == "injured":
+            reply = "I detected new injury information. Confirm to save it."
+        elif status == "cleared":
+            reply = "I detected that injuries are cleared. Confirm to save it."
+        else:
+            reply = "I detected profile updates. Confirm before saving."
+
     logger.info(
-        "intent.detect user_id=%s message=\"%s\" intent=%s days_per_week=%s has_reply=%s",
+        "intent.detect user_id=%s message=\"%s\" intent=%s days_per_week=%s has_reply=%s update_keys=%s",
         body.user_id,
         _clip(body.message, 120),
         intent,
         days,
         bool(reply),
+        sorted(profile_updates.keys()) if profile_updates else [],
     )
-    return IntentOut(intent=intent, days_per_week=days, assistant_reply=reply)
+    return IntentOut(
+        intent=intent,
+        days_per_week=days,
+        assistant_reply=reply,
+        profile_updates=profile_updates or None,
+    )
 
 
 @app.get("/api/db")

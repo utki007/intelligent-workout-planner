@@ -256,10 +256,25 @@ class LLM:
         {
           "intent": "generate_plan" | "profile_update" | "chat",
                     "days_per_week": int(2-7) | null,
-          "assistant_reply": str | null
+          "assistant_reply": str | null,
+          "profile_updates": {
+            "days_per_week": int(2-7) | null,
+            "intensity": float(1-5) | null,
+            "fitness_goals": str | null,
+            "injury_update": {
+              "status": "injured" | "recovered" | "cleared" | "unknown",
+              "operation": "add" | "remove" | "clear" | "none",
+              "muscles": [str]
+            } | null
+          } | null
         }
         """
-        out = {"intent": "chat", "days_per_week": None, "assistant_reply": None}
+        out = {
+            "intent": "chat",
+            "days_per_week": None,
+            "assistant_reply": None,
+            "profile_updates": None,
+        }
         if not self._client or not self._model:
             logger.warning("llm.intent unavailable model_configured=%s", bool(self._model))
             out["assistant_reply"] = (
@@ -270,21 +285,34 @@ class LLM:
 
         system = (
             "You classify intent for a workout-planner app.\n"
-            "Return strict JSON only with keys: intent, days_per_week, assistant_reply.\n"
+            "Return strict JSON only with keys: intent, days_per_week, assistant_reply, profile_updates.\n"
             "intent must be one of: generate_plan, profile_update, chat.\n"
             "days_per_week must be an integer 2-7 when explicitly requested, otherwise null.\n"
             "assistant_reply should be a short sentence for the UI, or null.\n"
+            "profile_updates must be null or an object with optional keys:\n"
+            "- days_per_week (2-7)\n"
+            "- intensity (1-5)\n"
+            "- fitness_goals (string)\n"
+            "- injury_update (object with status, operation, muscles)\n"
+            "injury_update.status must be one of: injured, recovered, cleared, unknown.\n"
+            "injury_update.operation must be one of: add, remove, clear, none.\n"
+            "injury_update.muscles must be lowercase muscle names.\n"
             "Rules:\n"
             "- If the user asks for a workout split/plan with a specific day count (e.g. '2 day split'), "
             "intent=generate_plan and days_per_week=<that number>.\n"
             "- If the user asks to change goals, injuries, intensity, or profile settings without asking to generate now, "
             "intent=profile_update.\n"
+            "- Injury semantics:\n"
+            "  - new pain/injury -> status=injured, operation=add.\n"
+            "  - recovery/better/healed/no longer hurt for specific muscles -> status=recovered, operation=remove.\n"
+            "  - no injuries / fully recovered overall -> status=cleared, operation=clear.\n"
             "- Otherwise intent=chat.\n"
             "Examples:\n"
-            "- 'I want a two day workout split for the weekend' -> {\"intent\":\"generate_plan\",\"days_per_week\":2,\"assistant_reply\":\"I'll build a 2-day plan.\"}\n"
-            "- 'I want a three day workout split' -> {\"intent\":\"generate_plan\",\"days_per_week\":3,\"assistant_reply\":\"I'll build a 3-day plan.\"}\n"
-            "- 'Update my injuries, shoulder is better' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I'll use your updated profile for your next plan.\"}\n"
-            "- 'Why this exercise?' -> {\"intent\":\"chat\",\"days_per_week\":null,\"assistant_reply\":null}"
+            "- 'I want a two day workout split for the weekend' -> {\"intent\":\"generate_plan\",\"days_per_week\":2,\"assistant_reply\":\"I'll build a 2-day plan.\",\"profile_updates\":null}\n"
+            "- 'Update my injuries, shoulder is better' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected an injury recovery update.\",\"profile_updates\":{\"injury_update\":{\"status\":\"recovered\",\"operation\":\"remove\",\"muscles\":[\"delts\"]}}}\n"
+            "- 'I hurt my knee and shoulder' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected new injury updates.\",\"profile_updates\":{\"injury_update\":{\"status\":\"injured\",\"operation\":\"add\",\"muscles\":[\"quads\",\"delts\"]}}}\n"
+            "- 'No injuries now' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected that injuries are cleared.\",\"profile_updates\":{\"injury_update\":{\"status\":\"cleared\",\"operation\":\"clear\",\"muscles\":[]}}}\n"
+            "- 'Why this exercise?' -> {\"intent\":\"chat\",\"days_per_week\":null,\"assistant_reply\":null,\"profile_updates\":null}"
         )
         user_content = f"User message: {(user_message or '').strip()}"
 
@@ -316,13 +344,55 @@ class LLM:
                 reply = parsed.get("assistant_reply")
                 if isinstance(reply, str) and reply.strip():
                     out["assistant_reply"] = reply.strip()
+                updates_raw = parsed.get("profile_updates")
+                if isinstance(updates_raw, dict):
+                    updates_out: dict[str, Any] = {}
+                    upd_days = updates_raw.get("days_per_week")
+                    if isinstance(upd_days, (int, float)):
+                        upd_days = int(upd_days)
+                        if 2 <= upd_days <= 7:
+                            updates_out["days_per_week"] = upd_days
+                    upd_intensity = updates_raw.get("intensity")
+                    if isinstance(upd_intensity, (int, float)):
+                        intensity = float(upd_intensity)
+                        if 1.0 <= intensity <= 5.0:
+                            updates_out["intensity"] = intensity
+                    upd_goals = updates_raw.get("fitness_goals")
+                    if isinstance(upd_goals, str) and upd_goals.strip():
+                        updates_out["fitness_goals"] = upd_goals.strip()
+
+                    injury_raw = updates_raw.get("injury_update")
+                    if isinstance(injury_raw, dict):
+                        injury_out: dict[str, Any] = {}
+                        status = str(injury_raw.get("status", "")).strip().lower()
+                        if status in {"injured", "recovered", "cleared", "unknown"}:
+                            injury_out["status"] = status
+                        operation = str(injury_raw.get("operation", "")).strip().lower()
+                        if operation in {"add", "remove", "clear", "none"}:
+                            injury_out["operation"] = operation
+                        muscles = injury_raw.get("muscles")
+                        if isinstance(muscles, list):
+                            cleaned = []
+                            seen: set[str] = set()
+                            for muscle in muscles:
+                                m = str(muscle).strip().lower()
+                                if m and m not in seen:
+                                    seen.add(m)
+                                    cleaned.append(m)
+                            injury_out["muscles"] = cleaned
+                        if injury_out:
+                            updates_out["injury_update"] = injury_out
+
+                    if updates_out:
+                        out["profile_updates"] = updates_out
         except Exception:
             logger.exception("llm.intent error")
         logger.info(
-            "llm.intent result intent=%s days_per_week=%s has_reply=%s",
+            "llm.intent result intent=%s days_per_week=%s has_reply=%s has_profile_updates=%s",
             out.get("intent"),
             out.get("days_per_week"),
             bool(out.get("assistant_reply")),
+            bool(out.get("profile_updates")),
         )
         return out
 

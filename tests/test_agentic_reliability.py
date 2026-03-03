@@ -28,6 +28,21 @@ class KRRRegressionTests(unittest.TestCase):
         self.assertNotIn("Shoulder Press", recommended)
         self.assertNotIn("Snatch", recommended)
 
+    def test_krr_maps_joint_injury_to_muscles(self):
+        df = pd.DataFrame(
+            [
+                {"name": "Squat", "target": "quads", "difficulty": "beginner"},
+                {"name": "Leg Curl", "target": "hamstrings", "difficulty": "beginner"},
+                {"name": "Biceps Curl", "target": "biceps", "difficulty": "beginner"},
+            ]
+        )
+        user_id = "krr_joint_map_user"
+        load_kb(df, user_id, ["knee"])
+        recommended = set(query_recommended(user_id))
+        self.assertNotIn("Squat", recommended)
+        self.assertNotIn("Leg Curl", recommended)
+        self.assertIn("Biceps Curl", recommended)
+
 
 class PolicyRegressionTests(unittest.TestCase):
     def test_policy_reduces_overtrained_muscle(self):

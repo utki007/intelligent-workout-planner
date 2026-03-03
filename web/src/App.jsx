@@ -5,10 +5,15 @@ const DEV_MODE = import.meta.env.DEV
 const ATHLETE_STORAGE_KEY = 'workout_athlete_profiles'
 const ATHLETE_ACTIVE_KEY = 'workout_active_athlete_id'
 
-const MUSCLE_OPTIONS = [
-  'chest', 'pectorals', 'back', 'lats', 'upper back', 'traps', 'shoulders', 'delts', 'arms', 'biceps', 'triceps',
-  'legs', 'quads', 'hamstrings', 'glutes', 'calves', 'abs', 'forearms', 'adductors', 'abductors',
-]
+const DEFAULT_JOINT_MUSCLE_MAP = {
+  shoulder: ['delts', 'traps', 'upper back', 'levator scapulae'],
+  elbow: ['biceps', 'triceps', 'forearms'],
+  wrist: ['forearms'],
+  hip: ['glutes', 'hamstrings', 'adductors', 'abductors'],
+  knee: ['quads', 'hamstrings', 'calves'],
+  ankle: ['calves'],
+  spine: ['upper back', 'lats', 'abs'],
+}
 
 const DEFAULT_PROFILE = {
   injury_muscles: [],
@@ -91,12 +96,15 @@ function makeAthleteId(name) {
   return `athlete_${base}_${suffix}`
 }
 
-function escapeRegex(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 function summarizeProfileUpdates(updates) {
   const parts = []
+  if (updates?.injury_update) {
+    const status = String(updates.injury_update.status || '').trim()
+    const muscles = Array.isArray(updates.injury_update.muscles) ? updates.injury_update.muscles : []
+    if (status) {
+      parts.push(`Injury status: ${status}${muscles.length ? ` (${muscles.join(', ')})` : ''}`)
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(updates, 'injury_muscles')) {
     const injuries = updates.injury_muscles || []
     parts.push(injuries.length ? `Injuries: ${injuries.join(', ')}` : 'Injuries: none')
@@ -111,6 +119,100 @@ function summarizeProfileUpdates(updates) {
     parts.push(`Goals: ${updates.fitness_goals}`)
   }
   return parts
+}
+
+function normalizeIntentProfileUpdates(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  const out = {}
+  if (Array.isArray(raw.injury_muscles)) {
+    out.injury_muscles = Array.from(
+      new Set(
+        raw.injury_muscles
+          .map((m) => String(m || '').trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    )
+  }
+  if (Number.isInteger(raw.days_per_week) && raw.days_per_week >= 2 && raw.days_per_week <= 7) {
+    out.days_per_week = raw.days_per_week
+  }
+  if (typeof raw.intensity === 'number' && raw.intensity >= 1 && raw.intensity <= 5) {
+    out.intensity = raw.intensity
+  }
+  if (typeof raw.fitness_goals === 'string' && raw.fitness_goals.trim()) {
+    out.fitness_goals = raw.fitness_goals.trim()
+  }
+  if (raw.injury_update && typeof raw.injury_update === 'object') {
+    const injuryUpdate = {}
+    if (typeof raw.injury_update.status === 'string' && raw.injury_update.status.trim()) {
+      injuryUpdate.status = raw.injury_update.status.trim().toLowerCase()
+    }
+    if (typeof raw.injury_update.operation === 'string' && raw.injury_update.operation.trim()) {
+      injuryUpdate.operation = raw.injury_update.operation.trim().toLowerCase()
+    }
+    if (Array.isArray(raw.injury_update.muscles)) {
+      injuryUpdate.muscles = Array.from(
+        new Set(
+          raw.injury_update.muscles
+            .map((m) => String(m || '').trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      )
+    }
+    if (Object.keys(injuryUpdate).length > 0) {
+      out.injury_update = injuryUpdate
+    }
+  }
+  return out
+}
+
+function toPersistedProfileUpdates(updates) {
+  const out = {}
+  for (const key of ['injury_muscles', 'days_per_week', 'intensity', 'fitness_goals']) {
+    if (Object.prototype.hasOwnProperty.call(updates || {}, key)) {
+      out[key] = updates[key]
+    }
+  }
+  return out
+}
+
+function normalizeJointMuscleMap(rawMap) {
+  const source = rawMap && typeof rawMap === 'object' ? rawMap : DEFAULT_JOINT_MUSCLE_MAP
+  const out = {}
+  for (const [jointRaw, musclesRaw] of Object.entries(source)) {
+    const joint = String(jointRaw || '').trim().toLowerCase()
+    if (!joint || !Array.isArray(musclesRaw)) continue
+    const muscles = Array.from(
+      new Set(
+        musclesRaw
+          .map((m) => String(m || '').trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    )
+    if (!muscles.length) continue
+    out[joint] = muscles
+  }
+  return Object.keys(out).length ? out : DEFAULT_JOINT_MUSCLE_MAP
+}
+
+function uniqueMusclesFromJointMap(jointMap, selectedMuscles = []) {
+  const out = []
+  const seen = new Set()
+  Object.values(jointMap || {}).forEach((muscles) => {
+    ;(muscles || []).forEach((muscle) => {
+      const m = String(muscle || '').trim().toLowerCase()
+      if (!m || seen.has(m)) return
+      seen.add(m)
+      out.push(m)
+    })
+  })
+  ;(selectedMuscles || []).forEach((muscle) => {
+    const m = String(muscle || '').trim().toLowerCase()
+    if (!m || seen.has(m)) return
+    seen.add(m)
+    out.push(m)
+  })
+  return out
 }
 
 export default function App() {
@@ -164,6 +266,7 @@ export default function App() {
     injuries: [],
     intensity: 3,
   })
+  const [injuryMap, setInjuryMap] = useState(DEFAULT_JOINT_MUSCLE_MAP)
 
   const chatEndRef = useRef(null)
 
@@ -207,6 +310,25 @@ export default function App() {
     if (!athletes.length) return
     localStorage.setItem(ATHLETE_STORAGE_KEY, JSON.stringify(athletes))
   }, [athletes])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadInjuryMap = async () => {
+      try {
+        const res = await fetch(`${API}/injury-map`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (cancelled) return
+        setInjuryMap(normalizeJointMuscleMap(data?.joints))
+      } catch {
+        // Keep fallback mapping from KB defaults.
+      }
+    }
+    loadInjuryMap()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const removeToast = (id) => {
     const meta = toastTimersRef.current[id]
@@ -460,6 +582,26 @@ export default function App() {
       }))
   }, [activePlan, stateRows.rows.length])
 
+  const normalizedDraftInjuries = useMemo(
+    () => Array.from(new Set((onboardingDraft.injuries || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean))),
+    [onboardingDraft.injuries],
+  )
+
+  const selectedInjurySet = useMemo(
+    () => new Set(normalizedDraftInjuries),
+    [normalizedDraftInjuries],
+  )
+
+  const jointOptions = useMemo(
+    () => Object.keys(injuryMap || {}),
+    [injuryMap],
+  )
+
+  const muscleOptions = useMemo(
+    () => uniqueMusclesFromJointMap(injuryMap, normalizedDraftInjuries),
+    [injuryMap, normalizedDraftInjuries],
+  )
+
   const saveProfile = async (updates) => {
     const id = (userId || '').trim()
     if (!id) return
@@ -478,64 +620,29 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: id, message }),
       })
-      if (!res.ok) return { intent: 'chat', days_per_week: null, assistant_reply: null }
+      if (!res.ok) return { intent: 'chat', days_per_week: null, assistant_reply: null, profile_updates: {} }
       const data = await res.json()
       return {
         intent: data.intent || 'chat',
         days_per_week: Number.isInteger(data.days_per_week) ? data.days_per_week : null,
         assistant_reply: typeof data.assistant_reply === 'string' ? data.assistant_reply : null,
+        profile_updates: normalizeIntentProfileUpdates(data.profile_updates),
       }
     } catch {
-      return { intent: 'chat', days_per_week: null, assistant_reply: null }
+      return { intent: 'chat', days_per_week: null, assistant_reply: null, profile_updates: {} }
     }
-  }
-
-  const inferProfileUpdatesFromMessage = (message) => {
-    const text = String(message || '').toLowerCase()
-    const updates = {}
-
-    const injurySignals = /\b(injured|injury|hurt|pain|strained|strain|pulled|tear|tore|sore)\b/.test(text)
-    const recoverySignals = /\b(recovered|healed|no injuries|not injured|fully recovered)\b/.test(text)
-    if (recoverySignals) {
-      updates.injury_muscles = []
-    } else if (injurySignals) {
-      const mentioned = MUSCLE_OPTIONS.filter((muscle) => {
-        const expr = new RegExp(`\\b${escapeRegex(muscle.toLowerCase())}\\b`)
-        return expr.test(text)
-      })
-      if (mentioned.length) {
-        updates.injury_muscles = Array.from(new Set([...(profile.injury_muscles || []), ...mentioned]))
-      }
-    }
-
-    const daysMatch = text.match(/\b([2-7])\s*[- ]?day(s)?\b/)
-    if (daysMatch) {
-      updates.days_per_week = Number(daysMatch[1])
-    }
-
-    const intensityMatch = text.match(/\bintensity\b[^\d]*([1-5](?:\.5)?)\b/)
-    if (intensityMatch) {
-      updates.intensity = Number(intensityMatch[1])
-    }
-
-    const goalMatch = text.match(/\b(goals?|goal)\s*(are|is|to)?\s*[:\-]?\s*(.+)$/)
-    if (goalMatch && goalMatch[3]) {
-      const goals = goalMatch[3].trim()
-      if (goals.length >= 4) updates.fitness_goals = goals
-    }
-
-    return updates
   }
 
   const applyDetectedProfileUpdate = async (messageIndex, updates) => {
-    if (!updates || Object.keys(updates).length === 0) return
-    await saveProfile(updates)
+    const persisted = toPersistedProfileUpdates(updates || {})
+    if (Object.keys(persisted).length === 0) return
+    await saveProfile(persisted)
     setOnboardingDraft((prev) => ({
       ...prev,
-      goals: updates.fitness_goals ?? prev.goals,
-      days: updates.days_per_week ?? prev.days,
-      injuries: updates.injury_muscles ?? prev.injuries,
-      intensity: updates.intensity ?? prev.intensity,
+      goals: persisted.fitness_goals ?? prev.goals,
+      days: persisted.days_per_week ?? prev.days,
+      injuries: persisted.injury_muscles ?? prev.injuries,
+      intensity: persisted.intensity ?? prev.intensity,
     }))
     setChatMessages((prev) => prev.map((m, idx) => (
       idx === messageIndex
@@ -660,15 +767,28 @@ export default function App() {
     setChatLoading(true)
     try {
       const intent = await resolveIntent(id, msg)
+      const inferred = intent.profile_updates || {}
+      const persistableInferred = toPersistedProfileUpdates(inferred)
+      const hasPersistableUpdates = Object.keys(persistableInferred).length > 0
 
       if (intent.intent === 'generate_plan') {
+        if (hasPersistableUpdates) {
+          await saveProfile(persistableInferred)
+          setOnboardingDraft((prev) => ({
+            ...prev,
+            goals: persistableInferred.fitness_goals ?? prev.goals,
+            days: persistableInferred.days_per_week ?? prev.days,
+            injuries: persistableInferred.injury_muscles ?? prev.injuries,
+            intensity: persistableInferred.intensity ?? prev.intensity,
+          }))
+          appendSystem('Detected profile updates applied before plan generation.')
+        }
         await generatePlan(intent.days_per_week, 'chat')
         return
       }
 
       if (intent.intent === 'profile_update') {
-        const inferred = inferProfileUpdatesFromMessage(msg)
-        if (Object.keys(inferred).length > 0) {
+        if (hasPersistableUpdates) {
           const detectedSummary = summarizeProfileUpdates(inferred)
           setChatMessages((prev) => [...prev, {
             role: 'system',
@@ -678,7 +798,7 @@ export default function App() {
             pendingProfileStatus: 'pending',
           }])
         } else {
-          appendSystem(intent.assistant_reply || 'Profile update detected. Use Edit in the left panel to apply exact fields.')
+          appendSystem(intent.assistant_reply || 'Profile update detected but no concrete fields were extracted.')
         }
         return
       }
@@ -849,11 +969,39 @@ export default function App() {
     }
   }
 
-  const toggleInjuryDraft = (muscle) => {
+  const toggleInjuryMuscle = (muscle) => {
+    const m = String(muscle || '').trim().toLowerCase()
+    if (!m) return
     setOnboardingDraft((prev) => {
-      const exists = prev.injuries.includes(muscle)
-      return { ...prev, injuries: exists ? prev.injuries.filter((m) => m !== muscle) : [...prev.injuries, muscle] }
+      const current = Array.from(new Set((prev.injuries || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)))
+      const exists = current.includes(m)
+      const next = exists ? current.filter((x) => x !== m) : [...current, m]
+      return { ...prev, injuries: next }
     })
+  }
+
+  const toggleInjuryJoint = (joint) => {
+    const j = String(joint || '').trim().toLowerCase()
+    const mapped = (injuryMap?.[j] || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean)
+    if (!mapped.length) return
+    setOnboardingDraft((prev) => {
+      const current = Array.from(new Set((prev.injuries || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)))
+      const currentSet = new Set(current)
+      const allSelected = mapped.every((m) => currentSet.has(m))
+      let next
+      if (allSelected) {
+        next = current.filter((m) => !mapped.includes(m))
+      } else {
+        next = Array.from(new Set([...current, ...mapped]))
+      }
+      return { ...prev, injuries: next }
+    })
+  }
+
+  const isJointHighlighted = (joint) => {
+    const mapped = injuryMap?.[joint] || []
+    if (!mapped.length) return false
+    return mapped.every((muscle) => selectedInjurySet.has(String(muscle).toLowerCase()))
   }
 
   const completeOnboarding = async () => {
@@ -1008,18 +1156,38 @@ export default function App() {
                 onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: Number(e.target.value) }))}
               />
 
-              <label>Injury muscles</label>
-              <div className="chips">
-                {MUSCLE_OPTIONS.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    className={`chip ${onboardingDraft.injuries.includes(m) ? 'chip-active' : ''}`}
-                    onClick={() => toggleInjuryDraft(m)}
-                  >
-                    {m}
-                  </button>
-                ))}
+              <label>Injury filters</label>
+              <div className="injury-filter-grid">
+                <div className="injury-filter-group">
+                  <p className="injury-filter-title">Joints</p>
+                  <div className="chips">
+                    {jointOptions.map((joint) => (
+                      <button
+                        key={joint}
+                        type="button"
+                        className={`chip ${isJointHighlighted(joint) ? 'chip-active' : ''}`}
+                        onClick={() => toggleInjuryJoint(joint)}
+                      >
+                        {joint}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="injury-filter-group">
+                  <p className="injury-filter-title">Muscles</p>
+                  <div className="chips">
+                    {muscleOptions.map((muscle) => (
+                      <button
+                        key={muscle}
+                        type="button"
+                        className={`chip ${selectedInjurySet.has(muscle) ? 'chip-active' : ''}`}
+                        onClick={() => toggleInjuryMuscle(muscle)}
+                      >
+                        {muscle}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <button type="button" className="btn btn-primary" onClick={completeOnboarding}>Save profile</button>

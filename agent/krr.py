@@ -39,6 +39,27 @@ MUSCLE_GROUP_EXPANSIONS = {
     "arms": ["biceps", "triceps", "forearms"],
 }
 
+# Joint-level injury mapping used to project joint issues to muscle constraints.
+JOINT_MUSCLE_MAP = {
+    "shoulder": ["delts", "traps", "upper back", "levator scapulae"],
+    "elbow": ["biceps", "triceps", "forearms"],
+    "wrist": ["forearms"],
+    "hip": ["glutes", "hamstrings", "adductors", "abductors"],
+    "knee": ["quads", "hamstrings", "calves"],
+    "ankle": ["calves"],
+    "spine": ["upper back", "lats", "abs"],
+}
+
+JOINT_ALIASES = {
+    "shoulders": "shoulder",
+    "elbows": "elbow",
+    "wrists": "wrist",
+    "hips": "hip",
+    "knees": "knee",
+    "ankles": "ankle",
+    "lower back": "spine",
+}
+
 
 def _normalize_muscles(target: Any) -> list[str]:
     """Normalize target to a list of muscle names (lowercase, stripped)."""
@@ -58,6 +79,10 @@ def normalize_injury_muscles(injury_muscles: list[str] | None) -> set[str]:
     for raw in injury_muscles or []:
         norm = str(raw).strip().lower()
         if not norm:
+            continue
+        norm = JOINT_ALIASES.get(norm, norm)
+        if norm in JOINT_MUSCLE_MAP:
+            out.update(JOINT_MUSCLE_MAP[norm])
             continue
         if norm in MUSCLE_GROUP_EXPANSIONS:
             out.update(MUSCLE_GROUP_EXPANSIONS[norm])
