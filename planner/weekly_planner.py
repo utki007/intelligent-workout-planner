@@ -1,17 +1,14 @@
 """
 Weekly plan generation driven by LLM + KB grounding.
 
-This module uses split templates from planner/splits.json as the source of truth
-for day themes/muscle focus, then asks the LLM to select exercises within those
+The LLM determines day themes/muscle focus directly from KB evidence + profile
 constraints. Output is validated against hard safety constraints.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -34,52 +31,6 @@ from planner.validation import verify_day_specs
 
 
 logger = logging.getLogger("workout.planner")
-
-_SPLITS_PATH = Path(__file__).with_name("splits.json")
-
-
-def _load_split_templates() -> dict[int, list[dict[str, Any]]]:
-    if not _SPLITS_PATH.exists():
-        logger.warning("planner.splits missing path=%s", _SPLITS_PATH)
-        return {}
-    try:
-        raw = json.loads(_SPLITS_PATH.read_text())
-    except Exception:
-        logger.exception("planner.splits failed_to_parse path=%s", _SPLITS_PATH)
-        return {}
-
-    out: dict[int, list[dict[str, Any]]] = {}
-    for key, value in (raw.items() if isinstance(raw, dict) else []):
-        try:
-            days = int(key)
-        except Exception:
-            continue
-        if not isinstance(value, list):
-            continue
-        normalized_days: list[dict[str, Any]] = []
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            theme = str(item.get("theme") or "").strip()
-            muscles = [
-                str(m).strip().lower()
-                for m in (item.get("muscles") or [])
-                if str(m).strip()
-            ]
-            normalized_days.append({"theme": theme or f"Day {len(normalized_days) + 1}", "muscles": muscles})
-        if normalized_days:
-            out[days] = normalized_days
-    return out
-
-
-SPLIT_TEMPLATES = _load_split_templates()
-
-
-def _split_for_days(days_per_week: int) -> list[dict[str, Any]]:
-    template = SPLIT_TEMPLATES.get(days_per_week)
-    if template and len(template) == days_per_week:
-        return template
-    return [{"theme": f"Day {i + 1}", "muscles": []} for i in range(days_per_week)]
 
 
 def _exercise_targets(row: pd.Series) -> list[str]:
@@ -105,6 +56,61 @@ def _derive_sets(primary_target: str, prescription: dict[str, dict[str, Any]]) -
     if primary_target and primary_target in prescription:
         sets = min(4, max(2, prescription[primary_target]["target_sets"] // 2))
     return max(2, min(4, sets))
+
+
+_HIGH_RECOVERY_MUSCLES = {
+    "quads",
+    "hamstrings",
+    "glutes",
+    "calves",
+    "adductors",
+    "abductors",
+    "lats",
+    "upper back",
+    "traps",
+    "levator scapulae",
+}
+
+
+def _intensity_exercise_band(intensity: float) -> tuple[int, int]:
+    """
+    Baseline per-day exercise count range from user intensity:
+      1 -> 2-3, 2 -> 4, 3 -> 4-5, 4 -> 5-6, 5 -> 6-7
+    """
+    if intensity <= 1.5:
+        return (2, 3)
+    if intensity <= 2.5:
+        return (4, 4)
+    if intensity <= 3.5:
+        return (4, 5)
+    if intensity <= 4.5:
+        return (5, 6)
+    return (6, 7)
+
+
+def _recovery_adjustment(day_muscles: list[str]) -> int:
+    """
+    High-recovery muscle groups should carry slightly fewer exercises
+    at a given intensity.
+    """
+    muscles = [str(m).strip().lower() for m in day_muscles if str(m).strip()]
+    if not muscles:
+        return 0
+    high_count = sum(1 for m in muscles if m in _HIGH_RECOVERY_MUSCLES)
+    # If most muscles for the day are high-recovery, reduce exercise count by 1.
+    if high_count * 2 >= len(muscles):
+        return -1
+    return 0
+
+
+def _desired_exercise_range(intensity: float, day_muscles: list[str]) -> tuple[int, int]:
+    base_min, base_max = _intensity_exercise_band(intensity)
+    adjust = _recovery_adjustment(day_muscles)
+    min_count = max(2, base_min + adjust)
+    max_count = max(min_count, base_max + adjust)
+    max_count = min(MAX_EXERCISES_PER_DAY, max_count)
+    min_count = min(min_count, max_count)
+    return (min_count, max_count)
 
 
 def _build_exercise_catalog(
@@ -173,7 +179,7 @@ def _kb_evidence_for_llm(
 def _sanitize_llm_plan(
     llm_payload: dict[str, Any] | None,
     days_per_week: int,
-    split_template: list[dict[str, Any]],
+    intensity: float,
     forbidden_muscles: set[str],
     by_muscle: dict[str, list[str]],
     targets_by_exercise: dict[str, list[str]],
@@ -198,14 +204,18 @@ def _sanitize_llm_plan(
     for idx in range(days_per_week):
         raw_day = days_raw[idx] if idx < len(days_raw) and isinstance(days_raw[idx], dict) else {}
         day_label = f"Day {idx + 1}"
-        template_day = split_template[idx] if idx < len(split_template) else {"theme": day_label, "muscles": []}
-        theme = str(template_day.get("theme") or day_label).strip()
-        template_muscles = [
+        theme = str(raw_day.get("theme") or day_label).strip()
+        llm_muscles = [
             str(m).strip().lower()
-            for m in (template_day.get("muscles") or [])
+            for m in (raw_day.get("muscles") or [])
             if str(m).strip()
         ]
-        muscles = list(template_muscles)
+        muscles: list[str] = []
+        for m in llm_muscles:
+            if m in forbidden_muscles:
+                continue
+            if m in by_muscle and m not in muscles:
+                muscles.append(m)
 
         ex_raw = raw_day.get("exercises")
         ex_raw = ex_raw if isinstance(ex_raw, list) else []
@@ -229,12 +239,12 @@ def _sanitize_llm_plan(
             if forbidden_muscles and any(t in forbidden_muscles for t in targets):
                 continue
 
-            if template_muscles and not any(t in template_muscles for t in targets):
+            if muscles and not any(t in muscles for t in targets):
                 continue
 
             target = str(ex.get("target", "")).strip().lower()
             if target not in targets:
-                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
+                target = next((t for t in targets if not muscles or t in muscles), targets[0])
 
             default_sets = _derive_sets(target, prescription)
             sets = _safe_int(ex.get("sets"), default_sets)
@@ -252,10 +262,20 @@ def _sanitize_llm_plan(
             if len(exercises) >= MAX_EXERCISES_PER_DAY:
                 break
 
+        if not muscles and exercises:
+            inferred_from_ex: list[str] = []
+            for ex in exercises:
+                m = str(ex.get("target", "")).strip().lower()
+                if m and m not in inferred_from_ex:
+                    inferred_from_ex.append(m)
+            muscles = inferred_from_ex[:2]
+
+        desired_min, desired_max = _desired_exercise_range(intensity, muscles)
+
         # If LLM under-selected exercises, fill from evidence to keep a usable day.
-        if len(exercises) < 3:
+        if len(exercises) < desired_min:
             candidate_pool: list[str] = []
-            source_muscles = template_muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
+            source_muscles = muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
             for m in source_muscles:
                 for name in by_muscle.get(m, []):
                     if name not in candidate_pool:
@@ -268,7 +288,7 @@ def _sanitize_llm_plan(
                     continue
                 if forbidden_muscles and any(t in forbidden_muscles for t in targets):
                     continue
-                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
+                target = next((t for t in targets if not muscles or t in muscles), targets[0])
                 exercises.append({
                     "name": name,
                     "sets": _derive_sets(target, prescription),
@@ -276,7 +296,7 @@ def _sanitize_llm_plan(
                     "target": target,
                 })
                 seen.add(name)
-                if len(exercises) >= MAX_EXERCISES_PER_DAY:
+                if len(exercises) >= desired_max:
                     break
 
         if not muscles:
@@ -286,6 +306,14 @@ def _sanitize_llm_plan(
                 if m and m not in inferred:
                     inferred.append(m)
             muscles = inferred[:2]
+
+        if not exercises:
+            theme = "Rest"
+            muscles = []
+        else:
+            # Enforce intensity/recovery-aware upper bound deterministically.
+            _, desired_max = _desired_exercise_range(intensity, muscles)
+            exercises = exercises[:desired_max]
 
         day_specs.append({
             "day": day_label,
@@ -299,7 +327,7 @@ def _sanitize_llm_plan(
 
 def _fallback_plan(
     days_per_week: int,
-    split_template: list[dict[str, Any]],
+    intensity: float,
     forbidden_muscles: set[str],
     by_muscle: dict[str, list[str]],
     targets_by_exercise: dict[str, list[str]],
@@ -313,18 +341,11 @@ def _fallback_plan(
     out: list[dict[str, Any]] = []
     for i in range(days_per_week):
         day = f"Day {i + 1}"
-        template_day = split_template[i] if i < len(split_template) else {"theme": day, "muscles": []}
-        day_muscles = [
-            str(m).strip().lower()
-            for m in (template_day.get("muscles") or [])
-            if str(m).strip()
-        ]
-        theme = str(template_day.get("theme") or day).strip()
-
-        if not day_muscles:
-            primary = muscles[i % len(muscles)]
-            secondary = muscles[(i + 1) % len(muscles)] if len(muscles) > 1 else primary
-            day_muscles = [primary] if secondary == primary else [primary, secondary]
+        primary = muscles[i % len(muscles)]
+        secondary = muscles[(i + 1) % len(muscles)] if len(muscles) > 1 else primary
+        day_muscles = [primary] if secondary == primary else [primary, secondary]
+        theme = f"{' + '.join(day_muscles)} focus"
+        desired_min, desired_max = _desired_exercise_range(intensity, day_muscles)
 
         pool: list[str] = []
         for m in day_muscles:
@@ -332,9 +353,11 @@ def _fallback_plan(
                 if n not in pool:
                     pool.append(n)
 
-        chosen = pool[:6]
+        seen_names: set[str] = set()
         exercises: list[dict[str, Any]] = []
-        for name in chosen:
+        for name in pool:
+            if name in seen_names:
+                continue
             targets = targets_by_exercise.get(name, [])
             if not targets:
                 continue
@@ -347,12 +370,26 @@ def _fallback_plan(
                 "reps": 12,
                 "target": target,
             })
+            seen_names.add(name)
+            if len(exercises) >= desired_max:
+                break
+
+        if not exercises:
+            theme = "Rest"
+            day_muscles = []
+        elif len(exercises) < desired_min:
+            logger.info(
+                "planner.fallback limited_catalog day=%s desired_min=%s got=%s",
+                day,
+                desired_min,
+                len(exercises),
+            )
 
         out.append({
             "day": day,
             "theme": theme,
             "muscles": day_muscles,
-            "exercises": exercises,
+            "exercises": exercises[:desired_max],
         })
 
     return out
@@ -376,6 +413,11 @@ def generate_weekly_plan(
     injury_muscles = user_profile.get("injury_muscles") or []
     forbidden_muscles = normalize_injury_muscles(injury_muscles)
     days_per_week = clamp_days_per_week(user_profile.get("days_per_week"))
+    try:
+        intensity = float(user_profile.get("intensity", 3))
+    except Exception:
+        intensity = 3.0
+    intensity = max(1.0, min(5.0, intensity))
 
     load_kb(exercises_df, user_id, injury_muscles)
     recommended_all = query_recommended(user_id)
@@ -383,7 +425,6 @@ def generate_weekly_plan(
     prescription = policy.get_prescription()
 
     by_muscle, targets_by_exercise, canonical_by_lower = _build_exercise_catalog(recommended_all, exercises_df)
-    split_template = _split_for_days(days_per_week)
     logger.info(
         "planner.catalog user_id=%s recommended_exercises=%s muscles=%s",
         user_id,
@@ -396,12 +437,11 @@ def generate_weekly_plan(
         "experience_level": user_profile.get("experience_level", "beginner"),
         "fitness_goals": user_profile.get("fitness_goals", ""),
         "days_per_week": days_per_week,
-        "intensity": user_profile.get("intensity", 3),
+        "intensity": intensity,
         "injury_muscles": injury_muscles,
     }
     llm_constraints = {
         "days_per_week": days_per_week,
-        "day_templates": split_template,
         "max_exercises_per_day": MAX_EXERCISES_PER_DAY,
         "sets_range": [MIN_SETS, MAX_SETS],
         "reps_range": [MIN_REPS, MAX_REPS],
@@ -409,6 +449,14 @@ def generate_weekly_plan(
         "target_sets_by_muscle": {
             m: data.get("target_sets", 6) for m, data in prescription.items()
         },
+        "exercise_count_guide_by_intensity": {
+            "1": [2, 3],
+            "2": [4, 4],
+            "3": [4, 5],
+            "4": [5, 6],
+            "5": [6, 7],
+        },
+        "high_recovery_muscles": sorted(_HIGH_RECOVERY_MUSCLES),
     }
 
     llm = LLM()
@@ -429,7 +477,7 @@ def generate_weekly_plan(
     day_specs = _sanitize_llm_plan(
         llm_payload=validated_payload,
         days_per_week=days_per_week,
-        split_template=split_template,
+        intensity=intensity,
         forbidden_muscles=forbidden_muscles,
         by_muscle=by_muscle,
         targets_by_exercise=targets_by_exercise,
@@ -473,7 +521,7 @@ def generate_weekly_plan(
         day_specs_retry = _sanitize_llm_plan(
             llm_payload=validated_retry,
             days_per_week=days_per_week,
-            split_template=split_template,
+            intensity=intensity,
             forbidden_muscles=forbidden_muscles,
             by_muscle=by_muscle,
             targets_by_exercise=targets_by_exercise,
@@ -502,7 +550,7 @@ def generate_weekly_plan(
         logger.warning("planner.llm unusable_output=true fallback=algorithmic user_id=%s", user_id)
         day_specs = _fallback_plan(
             days_per_week=days_per_week,
-            split_template=split_template,
+            intensity=intensity,
             forbidden_muscles=forbidden_muscles,
             by_muscle=by_muscle,
             targets_by_exercise=targets_by_exercise,
@@ -541,4 +589,3 @@ def generate_weekly_plan(
         )
 
     return plan, krr_reasoning, day_themes, day_theme_muscles
-

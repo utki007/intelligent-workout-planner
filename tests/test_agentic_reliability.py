@@ -125,6 +125,43 @@ class PlannerRegressionTests(unittest.TestCase):
         ]
         self.assertNotIn("pectorals", all_targets)
 
+    @patch("planner.weekly_planner.LLM.build_weekly_plan")
+    def test_fallback_respects_intensity_for_exercise_count(self, mock_build):
+        mock_build.return_value = {"unexpected": "shape"}
+
+        df = pd.DataFrame(
+            [
+                {"name": "Chest Press A", "target": "pectorals", "difficulty": "beginner"},
+                {"name": "Chest Press B", "target": "pectorals", "difficulty": "beginner"},
+                {"name": "Chest Press C", "target": "pectorals", "difficulty": "beginner"},
+                {"name": "Chest Press D", "target": "pectorals", "difficulty": "beginner"},
+                {"name": "Chest Press E", "target": "pectorals", "difficulty": "beginner"},
+                {"name": "Biceps Curl A", "target": "biceps", "difficulty": "beginner"},
+                {"name": "Biceps Curl B", "target": "biceps", "difficulty": "beginner"},
+                {"name": "Biceps Curl C", "target": "biceps", "difficulty": "beginner"},
+                {"name": "Biceps Curl D", "target": "biceps", "difficulty": "beginner"},
+                {"name": "Biceps Curl E", "target": "biceps", "difficulty": "beginner"},
+                {"name": "Triceps Pushdown A", "target": "triceps", "difficulty": "beginner"},
+                {"name": "Triceps Pushdown B", "target": "triceps", "difficulty": "beginner"},
+            ]
+        )
+        state = AgentState(user_id="intensity_count_user")
+        goals = AgentGoals()
+        profile = {
+            "user_id": "intensity_count_user",
+            "name": "intensity_count_user",
+            "experience_level": "beginner",
+            "injury_muscles": [],
+            "days_per_week": 2,
+            "intensity": 4,
+            "fitness_goals": "build strength",
+        }
+
+        plan, _, _, _ = generate_weekly_plan("intensity_count_user", profile, df, state, goals)
+        for day_exercises in plan.values():
+            # Intensity 4 should not collapse to 3/day when catalog is sufficient.
+            self.assertGreaterEqual(len(day_exercises), 5)
+
 
 class MCPRegressionTests(unittest.TestCase):
     @patch("agent.mcp.generate_weekly_plan")
