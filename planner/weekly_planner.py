@@ -1,26 +1,85 @@
 """
 Weekly plan generation driven by LLM + KB grounding.
 
-This module no longer uses static split presets. It encodes KB evidence
-(recommended exercises filtered by injuries) and asks the LLM to synthesize
-an N-day plan that is then validated against hard constraints.
+This module uses split templates from planner/splits.json as the source of truth
+for day themes/muscle focus, then asks the LLM to select exercises within those
+constraints. Output is validated against hard safety constraints.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from agent.agent_state import AgentGoals, AgentState
 from agent.decision_policy import DecisionPolicy
-from agent.krr import get_krr_reasoning, load_kb, query_recommended
+from agent.krr import get_krr_reasoning, load_kb, normalize_injury_muscles, query_recommended
 from agent.llm import LLM
+from agent.reliability_metrics import increment_metric
+from planner.constraints import (
+    MAX_EXERCISES_PER_DAY,
+    MAX_REPS,
+    MAX_SETS,
+    MIN_REPS,
+    MIN_SETS,
+    clamp_days_per_week,
+)
+from planner.llm_contract import parse_llm_plan_payload
+from planner.validation import verify_day_specs
 
 
 logger = logging.getLogger("workout.planner")
+
+_SPLITS_PATH = Path(__file__).with_name("splits.json")
+
+
+def _load_split_templates() -> dict[int, list[dict[str, Any]]]:
+    if not _SPLITS_PATH.exists():
+        logger.warning("planner.splits missing path=%s", _SPLITS_PATH)
+        return {}
+    try:
+        raw = json.loads(_SPLITS_PATH.read_text())
+    except Exception:
+        logger.exception("planner.splits failed_to_parse path=%s", _SPLITS_PATH)
+        return {}
+
+    out: dict[int, list[dict[str, Any]]] = {}
+    for key, value in (raw.items() if isinstance(raw, dict) else []):
+        try:
+            days = int(key)
+        except Exception:
+            continue
+        if not isinstance(value, list):
+            continue
+        normalized_days: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            theme = str(item.get("theme") or "").strip()
+            muscles = [
+                str(m).strip().lower()
+                for m in (item.get("muscles") or [])
+                if str(m).strip()
+            ]
+            normalized_days.append({"theme": theme or f"Day {len(normalized_days) + 1}", "muscles": muscles})
+        if normalized_days:
+            out[days] = normalized_days
+    return out
+
+
+SPLIT_TEMPLATES = _load_split_templates()
+
+
+def _split_for_days(days_per_week: int) -> list[dict[str, Any]]:
+    template = SPLIT_TEMPLATES.get(days_per_week)
+    if template and len(template) == days_per_week:
+        return template
+    return [{"theme": f"Day {i + 1}", "muscles": []} for i in range(days_per_week)]
 
 
 def _exercise_targets(row: pd.Series) -> list[str]:
@@ -114,6 +173,8 @@ def _kb_evidence_for_llm(
 def _sanitize_llm_plan(
     llm_payload: dict[str, Any] | None,
     days_per_week: int,
+    split_template: list[dict[str, Any]],
+    forbidden_muscles: set[str],
     by_muscle: dict[str, list[str]],
     targets_by_exercise: dict[str, list[str]],
     canonical_by_lower: dict[str, str],
@@ -136,16 +197,15 @@ def _sanitize_llm_plan(
 
     for idx in range(days_per_week):
         raw_day = days_raw[idx] if idx < len(days_raw) and isinstance(days_raw[idx], dict) else {}
-        day_label = f"Day{idx + 1}"
-        theme = str(raw_day.get("theme", "")).strip() or f"Day {idx + 1}"
-
-        muscles_raw = raw_day.get("muscles")
-        muscles: list[str] = []
-        if isinstance(muscles_raw, list):
-            for m in muscles_raw:
-                ms = str(m).strip().lower()
-                if ms and ms in by_muscle and ms not in muscles:
-                    muscles.append(ms)
+        day_label = f"Day {idx + 1}"
+        template_day = split_template[idx] if idx < len(split_template) else {"theme": day_label, "muscles": []}
+        theme = str(template_day.get("theme") or day_label).strip()
+        template_muscles = [
+            str(m).strip().lower()
+            for m in (template_day.get("muscles") or [])
+            if str(m).strip()
+        ]
+        muscles = list(template_muscles)
 
         ex_raw = raw_day.get("exercises")
         ex_raw = ex_raw if isinstance(ex_raw, list) else []
@@ -165,15 +225,22 @@ def _sanitize_llm_plan(
             targets = targets_by_exercise.get(canonical, [])
             if not targets:
                 continue
+
+            if forbidden_muscles and any(t in forbidden_muscles for t in targets):
+                continue
+
+            if template_muscles and not any(t in template_muscles for t in targets):
+                continue
+
             target = str(ex.get("target", "")).strip().lower()
             if target not in targets:
-                target = targets[0]
+                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
 
             default_sets = _derive_sets(target, prescription)
             sets = _safe_int(ex.get("sets"), default_sets)
-            sets = max(2, min(4, sets))
+            sets = max(MIN_SETS, min(MAX_SETS, sets))
             reps = _safe_int(ex.get("reps"), 12)
-            reps = max(6, min(20, reps))
+            reps = max(MIN_REPS, min(MAX_REPS, reps))
 
             exercises.append({
                 "name": canonical,
@@ -182,13 +249,13 @@ def _sanitize_llm_plan(
                 "target": target,
             })
             seen.add(canonical)
-            if len(exercises) >= 6:
+            if len(exercises) >= MAX_EXERCISES_PER_DAY:
                 break
 
         # If LLM under-selected exercises, fill from evidence to keep a usable day.
         if len(exercises) < 3:
             candidate_pool: list[str] = []
-            source_muscles = muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
+            source_muscles = template_muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
             for m in source_muscles:
                 for name in by_muscle.get(m, []):
                     if name not in candidate_pool:
@@ -199,7 +266,9 @@ def _sanitize_llm_plan(
                 targets = targets_by_exercise.get(name, [])
                 if not targets:
                     continue
-                target = targets[0]
+                if forbidden_muscles and any(t in forbidden_muscles for t in targets):
+                    continue
+                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
                 exercises.append({
                     "name": name,
                     "sets": _derive_sets(target, prescription),
@@ -207,7 +276,7 @@ def _sanitize_llm_plan(
                     "target": target,
                 })
                 seen.add(name)
-                if len(exercises) >= 6:
+                if len(exercises) >= MAX_EXERCISES_PER_DAY:
                     break
 
         if not muscles:
@@ -222,7 +291,7 @@ def _sanitize_llm_plan(
             "day": day_label,
             "theme": theme,
             "muscles": muscles,
-            "exercises": exercises[:6],
+            "exercises": exercises[:MAX_EXERCISES_PER_DAY],
         })
 
     return day_specs
@@ -230,6 +299,8 @@ def _sanitize_llm_plan(
 
 def _fallback_plan(
     days_per_week: int,
+    split_template: list[dict[str, Any]],
+    forbidden_muscles: set[str],
     by_muscle: dict[str, list[str]],
     targets_by_exercise: dict[str, list[str]],
     prescription: dict[str, dict[str, Any]],
@@ -237,15 +308,23 @@ def _fallback_plan(
     """Algorithmic fallback if LLM is unavailable or output is invalid."""
     muscles = sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
     if not muscles:
-        return [{"day": f"Day{i + 1}", "theme": "Rest", "muscles": [], "exercises": []} for i in range(days_per_week)]
+        return [{"day": f"Day {i + 1}", "theme": "Rest", "muscles": [], "exercises": []} for i in range(days_per_week)]
 
     out: list[dict[str, Any]] = []
     for i in range(days_per_week):
-        day = f"Day{i + 1}"
-        primary = muscles[i % len(muscles)]
-        secondary = muscles[(i + 1) % len(muscles)] if len(muscles) > 1 else primary
-        day_muscles = [primary] if secondary == primary else [primary, secondary]
-        theme = f"{primary.title()} Focus"
+        day = f"Day {i + 1}"
+        template_day = split_template[i] if i < len(split_template) else {"theme": day, "muscles": []}
+        day_muscles = [
+            str(m).strip().lower()
+            for m in (template_day.get("muscles") or [])
+            if str(m).strip()
+        ]
+        theme = str(template_day.get("theme") or day).strip()
+
+        if not day_muscles:
+            primary = muscles[i % len(muscles)]
+            secondary = muscles[(i + 1) % len(muscles)] if len(muscles) > 1 else primary
+            day_muscles = [primary] if secondary == primary else [primary, secondary]
 
         pool: list[str] = []
         for m in day_muscles:
@@ -258,6 +337,8 @@ def _fallback_plan(
         for name in chosen:
             targets = targets_by_exercise.get(name, [])
             if not targets:
+                continue
+            if forbidden_muscles and any(t in forbidden_muscles for t in targets):
                 continue
             target = targets[0]
             exercises.append({
@@ -293,7 +374,8 @@ def generate_weekly_plan(
     """
     del modifications  # not currently used for LLM generation
     injury_muscles = user_profile.get("injury_muscles") or []
-    days_per_week = max(3, min(7, int(user_profile.get("days_per_week") or 5)))
+    forbidden_muscles = normalize_injury_muscles(injury_muscles)
+    days_per_week = clamp_days_per_week(user_profile.get("days_per_week"))
 
     load_kb(exercises_df, user_id, injury_muscles)
     recommended_all = query_recommended(user_id)
@@ -301,6 +383,7 @@ def generate_weekly_plan(
     prescription = policy.get_prescription()
 
     by_muscle, targets_by_exercise, canonical_by_lower = _build_exercise_catalog(recommended_all, exercises_df)
+    split_template = _split_for_days(days_per_week)
     logger.info(
         "planner.catalog user_id=%s recommended_exercises=%s muscles=%s",
         user_id,
@@ -318,9 +401,10 @@ def generate_weekly_plan(
     }
     llm_constraints = {
         "days_per_week": days_per_week,
-        "max_exercises_per_day": 6,
-        "sets_range": [2, 4],
-        "reps_range": [6, 20],
+        "day_templates": split_template,
+        "max_exercises_per_day": MAX_EXERCISES_PER_DAY,
+        "sets_range": [MIN_SETS, MAX_SETS],
+        "reps_range": [MIN_REPS, MAX_REPS],
         "preferred_reps": 12,
         "target_sets_by_muscle": {
             m: data.get("target_sets", 6) for m, data in prescription.items()
@@ -334,25 +418,104 @@ def generate_weekly_plan(
         kb_evidence=kb_evidence,
         constraints=llm_constraints,
     )
+
+    validated_payload, schema_errors = parse_llm_plan_payload(llm_payload)
+    if validated_payload is None:
+        increment_metric("schema_fail_rate")
+        logger.warning("planner.schema valid=false user_id=%s errors=%s", user_id, schema_errors[:8])
+    else:
+        increment_metric("schema_pass_rate")
+
     day_specs = _sanitize_llm_plan(
-        llm_payload=llm_payload,
+        llm_payload=validated_payload,
         days_per_week=days_per_week,
+        split_template=split_template,
+        forbidden_muscles=forbidden_muscles,
         by_muscle=by_muscle,
         targets_by_exercise=targets_by_exercise,
         canonical_by_lower=canonical_by_lower,
         prescription=prescription,
     )
 
-    if not day_specs:
+    verification = verify_day_specs(
+        day_specs,
+        expected_days=days_per_week,
+        allowed_exercises=set(targets_by_exercise.keys()),
+        min_sets=MIN_SETS,
+        max_sets=MAX_SETS,
+        min_reps=MIN_REPS,
+        max_reps=MAX_REPS,
+        max_exercises_per_day=MAX_EXERCISES_PER_DAY,
+        max_sets_per_muscle_per_week=goals.max_sets_per_muscle_per_week,
+    )
+
+    if day_specs and not verification.is_valid:
+        increment_metric("verifier_fail_rate")
+        logger.warning(
+            "planner.verify failed=true user_id=%s issues=%s",
+            user_id,
+            verification.issues[:8],
+        )
+        increment_metric("repair_attempt_count")
+        llm_payload_retry = llm.build_weekly_plan(
+            user_id=user_id,
+            profile=llm_profile,
+            kb_evidence=kb_evidence,
+            constraints=llm_constraints,
+            repair_feedback=verification.issues[:10],
+        )
+        validated_retry, retry_schema_errors = parse_llm_plan_payload(llm_payload_retry)
+        if validated_retry is None:
+            increment_metric("schema_fail_rate")
+            logger.warning("planner.schema retry_valid=false user_id=%s errors=%s", user_id, retry_schema_errors[:8])
+        else:
+            increment_metric("schema_pass_rate")
+        day_specs_retry = _sanitize_llm_plan(
+            llm_payload=validated_retry,
+            days_per_week=days_per_week,
+            split_template=split_template,
+            forbidden_muscles=forbidden_muscles,
+            by_muscle=by_muscle,
+            targets_by_exercise=targets_by_exercise,
+            canonical_by_lower=canonical_by_lower,
+            prescription=prescription,
+        )
+        verification_retry = verify_day_specs(
+            day_specs_retry,
+            expected_days=days_per_week,
+            allowed_exercises=set(targets_by_exercise.keys()),
+            min_sets=MIN_SETS,
+            max_sets=MAX_SETS,
+            min_reps=MIN_REPS,
+            max_reps=MAX_REPS,
+            max_exercises_per_day=MAX_EXERCISES_PER_DAY,
+            max_sets_per_muscle_per_week=goals.max_sets_per_muscle_per_week,
+        )
+        if verification_retry.is_valid:
+            day_specs = day_specs_retry
+            verification = verification_retry
+            increment_metric("repair_success_rate")
+            logger.info("planner.verify repair_success=true user_id=%s", user_id)
+
+    if not day_specs or not verification.is_valid:
+        increment_metric("fallback_rate")
         logger.warning("planner.llm unusable_output=true fallback=algorithmic user_id=%s", user_id)
         day_specs = _fallback_plan(
             days_per_week=days_per_week,
+            split_template=split_template,
+            forbidden_muscles=forbidden_muscles,
             by_muscle=by_muscle,
             targets_by_exercise=targets_by_exercise,
             prescription=prescription,
         )
     else:
-        logger.info("planner.llm usable_output=true user_id=%s days=%s", user_id, len(day_specs))
+        logger.info(
+            "planner.llm usable_output=true user_id=%s days=%s verification_issues=%s",
+            user_id,
+            len(day_specs),
+            verification.stats.get("issue_count", 0),
+        )
+    increment_metric("plans_generated")
 
     plan: dict[str, list[dict]] = {}
     krr_reasoning: dict[str, str] = {}

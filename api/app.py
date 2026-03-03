@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -26,6 +27,14 @@ from agent.agent_state import AgentGoals, AgentState
 from agent.krr import load_kb, query_recommended
 from agent.llm import LLM
 from agent.mcp import run_plan_cycle
+from agent.reliability_metrics import get_metrics
+from planner.constraints import (
+    DEFAULT_DAYS_PER_WEEK,
+    MAX_DAYS_PER_WEEK,
+    MIN_DAYS_PER_WEEK,
+    clamp_days_per_week,
+    normalize_requested_days,
+)
 
 
 _LOG_LEVEL = os.environ.get("WORKOUT_LOG_LEVEL", "INFO").upper()
@@ -79,9 +88,10 @@ def load_profile(user_id: str) -> dict:
         "injury_muscles": [],
         "intensity": 3,
         "feedback_history": [],
+        "chat_history": [],
         "onboarding_complete": False,
         "fitness_goals": "",
-        "days_per_week": 5,
+        "days_per_week": DEFAULT_DAYS_PER_WEEK,
     }
     if not os.path.isfile(path):
         logger.debug("profile.load user_id=%s found=false", user_id)
@@ -93,9 +103,10 @@ def load_profile(user_id: str) -> dict:
             "injury_muscles": data.get("injury_muscles", []),
             "intensity": data.get("intensity", 3),
             "feedback_history": data.get("feedback_history", []),
+            "chat_history": data.get("chat_history", []),
             "onboarding_complete": data.get("onboarding_complete", False),
             "fitness_goals": data.get("fitness_goals", ""),
-            "days_per_week": data.get("days_per_week", 5),
+            "days_per_week": clamp_days_per_week(data.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         }
         logger.debug(
             "profile.load user_id=%s found=true onboarding=%s days_per_week=%s injuries=%s",
@@ -129,7 +140,7 @@ def save_profile(
     if fitness_goals is not None:
         prof["fitness_goals"] = str(fitness_goals).strip()
     if days_per_week is not None:
-        prof["days_per_week"] = max(3, min(7, int(days_per_week)))
+        prof["days_per_week"] = clamp_days_per_week(days_per_week)
     path = _profile_store_path(user_id)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -161,6 +172,25 @@ def append_feedback_to_profile(user_id: str, soreness: float) -> None:
         soreness,
         len(prof.get("feedback_history", [])),
     )
+
+
+def append_chat_turn_to_profile(user_id: str, user_message: str, assistant_response: str) -> None:
+    """Persist recent chat exchanges for better continuity across sessions."""
+    prof = load_profile(user_id)
+    hist = prof.get("chat_history", [])
+    hist.append(
+        {
+            "ts": int(time.time()),
+            "user": str(user_message or "").strip()[:500],
+            "assistant": str(assistant_response or "").strip()[:1200],
+        }
+    )
+    prof["chat_history"] = hist[-50:]
+    path = _profile_store_path(user_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(prof, f, indent=2)
+    logger.info("profile.chat.append user_id=%s history_len=%s", user_id, len(prof.get("chat_history", [])))
 
 
 def save_plan_for_user(user_id: str, plan: dict, krr_reasoning: dict) -> None:
@@ -275,6 +305,60 @@ class ProfileUpdateIn(BaseModel):
     days_per_week: int | None = None
 
 
+class DayActionIn(BaseModel):
+    user_id: str
+    day: str
+
+
+class DayReduceIn(DayActionIn):
+    delta_sets: int | None = 1
+
+
+class DaySwapIn(DayActionIn):
+    index_a: int | None = 0
+    index_b: int | None = 1
+
+
+class DayActionOut(BaseModel):
+    ok: bool
+    user_id: str
+    day: str
+    message: str
+    plan: dict
+    krr_reasoning: dict
+    day_theme: str | None = None
+    day_theme_muscles: list[str] | None = None
+
+
+def _build_user_profile_for_planner(user_id: str) -> tuple[dict, AgentGoals]:
+    stored_profile = load_profile(user_id)
+    goals = AgentGoals()
+    try:
+        intensity = float(stored_profile.get("intensity", goals.target_soreness_max))
+    except (TypeError, ValueError):
+        intensity = goals.target_soreness_max
+    intensity = max(1.0, min(5.0, intensity))
+    goals.max_sets_per_muscle_per_week = int(4 * intensity + 8)
+
+    user_profile = {
+        "user_id": user_id,
+        "name": user_id,
+        "experience_level": "beginner",
+        "injury_muscles": stored_profile.get("injury_muscles", []),
+        "days_per_week": clamp_days_per_week(stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
+        "intensity": intensity,
+        "fitness_goals": stored_profile.get("fitness_goals", ""),
+    }
+    return user_profile, goals
+
+
+def _require_stored_plan(user_id: str) -> tuple[dict, dict]:
+    stored = load_plan_for_user(user_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="No plan found for this user. Generate a plan first.")
+    return stored
+
+
 def resolve_intent(message: str) -> dict:
     """Classify chat intent using the configured LLM."""
     llm = LLM()
@@ -287,6 +371,133 @@ def resolve_intent(message: str) -> dict:
         bool(out.get("assistant_reply")),
     )
     return out
+
+
+def _extract_days_hint(message: str) -> int | None:
+    text = (message or "").lower()
+    if not text:
+        return None
+
+    num_match = re.search(r"\b([2-7])\s*[- ]?day\b", text)
+    if num_match:
+        return int(num_match.group(1))
+
+    word_match = re.search(r"\b(two|three|four|five|six|seven)\s*[- ]?day\b", text)
+    if word_match:
+        mapping = {
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+        }
+        return mapping.get(word_match.group(1))
+
+    return None
+
+
+def _heuristic_intent(message: str) -> tuple[str, int | None]:
+    text = (message or "").strip().lower()
+    if not text:
+        return "chat", None
+
+    days_hint = _extract_days_hint(text)
+    plan_terms = {
+        "plan", "split", "workout", "routine", "program",
+    }
+    plan_verbs = {
+        "make", "build", "create", "generate", "start", "give", "prepare",
+    }
+    profile_terms = {
+        "injury", "injuries", "intensity", "goal", "goals", "profile", "soreness", "recover",
+    }
+    profile_verbs = {
+        "update", "change", "edit", "set", "adjust",
+    }
+
+    has_plan_term = any(token in text for token in plan_terms)
+    has_plan_verb = any(token in text for token in plan_verbs)
+    has_profile_term = any(token in text for token in profile_terms)
+    has_profile_verb = any(token in text for token in profile_verbs)
+
+    if has_plan_term and (has_plan_verb or "me a" in text or "for me" in text):
+        return "generate_plan", days_hint
+    if has_plan_term and ("day" in text or "days" in text):
+        return "generate_plan", days_hint
+    if has_profile_term and has_profile_verb and not has_plan_term:
+        return "profile_update", None
+
+    return "chat", days_hint
+
+
+def _summarize_saved_plan(plan: dict) -> str | None:
+    if not plan:
+        return None
+    day_keys = sorted(plan.keys(), key=lambda d: int(re.search(r"\d+", str(d)).group(0)) if re.search(r"\d+", str(d)) else 999)
+    if not day_keys:
+        return None
+    parts = []
+    for day in day_keys[:5]:
+        names = [str(ex.get("name", "")).strip() for ex in (plan.get(day) or []) if str(ex.get("name", "")).strip()]
+        parts.append(f"{day}: {', '.join(names[:6]) or 'Rest'}")
+    return "; ".join(parts)
+
+
+def _summarize_saved_krr(krr_reasoning: dict) -> str | None:
+    if not isinstance(krr_reasoning, dict) or not krr_reasoning:
+        return None
+    chunks: list[str] = []
+    for _, value in list(krr_reasoning.items())[:2]:
+        text = str(value or "").strip()
+        if text:
+            chunks.append(_clip(text, 240))
+    return " ".join(chunks) if chunks else None
+
+
+def _is_progress_query(message: str) -> bool:
+    text = (message or "").lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in [
+            "progress",
+            "how am i doing",
+            "how i'm doing",
+            "stats",
+            "status",
+            "track",
+            "summary",
+        ]
+    )
+
+
+def _build_progress_reply(user_id: str, profile: dict) -> str:
+    stored = load_plan_for_user(user_id)
+    plan = stored[0] if stored else {}
+    total_days = len(plan)
+    total_exercises = sum(len(day or []) for day in plan.values()) if plan else 0
+
+    feedback = profile.get("feedback_history", []) or []
+    soreness_values = [float(item.get("soreness")) for item in feedback if isinstance(item, dict) and item.get("soreness") is not None]
+    latest_soreness = soreness_values[-1] if soreness_values else None
+    avg_soreness = (sum(soreness_values) / len(soreness_values)) if soreness_values else None
+
+    state = AgentState.load(user_id)
+    tracked_muscles = 0
+    if state:
+        tracked_muscles = len(set(list((state.soreness_per_muscle or {}).keys()) + list((state.weekly_volume_per_muscle or {}).keys())))
+
+    injuries = profile.get("injury_muscles", []) or []
+    lines = [
+        "Here’s your tracked progress so far:",
+        f"- Profile saved: goal='{(profile.get('fitness_goals') or 'not set')}', days/week={profile.get('days_per_week', DEFAULT_DAYS_PER_WEEK)}, injuries={', '.join(injuries) if injuries else 'none'}.",
+        f"- Latest saved plan: {total_days} days, {total_exercises} exercises total." if total_days else "- Latest saved plan: none yet. Ask me to generate a plan and I’ll save it.",
+        f"- Recovery check-ins: {len(soreness_values)} logged" + (f" (latest {latest_soreness:.1f}/5, avg {avg_soreness:.2f}/5)." if latest_soreness is not None and avg_soreness is not None else "."),
+        f"- Muscle tracking: {tracked_muscles} muscles with soreness/volume state.",
+    ]
+    return "\n".join(lines)
 
 
 @app.middleware("http")
@@ -377,11 +588,12 @@ def detect_intent(body: IntentIn):
     days = payload.get("days_per_week")
     if isinstance(days, (int, float)):
         days = int(days)
-        if days < 2 or days > 7:
+        if days < MIN_DAYS_PER_WEEK or days > MAX_DAYS_PER_WEEK:
             days = None
     elif isinstance(days, str):
         normalized = days.strip().lower()
         word_to_num = {
+            "two": 2,
             "three": 3,
             "four": 4,
             "five": 5,
@@ -394,10 +606,17 @@ def detect_intent(body: IntentIn):
             days = word_to_num[normalized]
         else:
             days = None
-        if isinstance(days, int) and (days < 2 or days > 7):
+        if isinstance(days, int) and (days < MIN_DAYS_PER_WEEK or days > MAX_DAYS_PER_WEEK):
             days = None
     else:
         days = None
+
+    heuristic_intent, heuristic_days = _heuristic_intent(body.message)
+    if intent == "chat" and heuristic_intent in {"generate_plan", "profile_update"}:
+        intent = heuristic_intent
+    if intent == "generate_plan" and days is None and heuristic_days is not None:
+        days = heuristic_days
+
     reply = payload.get("assistant_reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
@@ -457,6 +676,12 @@ def get_reasoning():
     }
 
 
+@app.get("/api/reliability")
+def get_reliability_metrics():
+    """Return lightweight reliability counters for monitoring."""
+    return {"metrics": get_metrics()}
+
+
 @app.post("/api/plan", response_model=PlanOut)
 def generate_plan(profile: ProfileIn):
     """Generate a weekly plan. Uses saved injuries if profile.injury_muscles is empty."""
@@ -492,13 +717,7 @@ def generate_plan(profile: ProfileIn):
     goals.max_sets_per_muscle_per_week = int(4 * intensity + 8)
 
     requested_days = profile.days_per_week
-    if requested_days is not None:
-        try:
-            requested_days = int(requested_days)
-        except (TypeError, ValueError):
-            requested_days = None
-        if requested_days is not None and (requested_days < 3 or requested_days > 7):
-            requested_days = None
+    requested_days = normalize_requested_days(requested_days)
 
     user_profile = {
         "user_id": profile.user_id,
@@ -506,7 +725,7 @@ def generate_plan(profile: ProfileIn):
         "experience_level": profile.experience_level or "beginner",
         "injury_muscles": injuries,
         # Respect preferred training frequency unless an override was explicitly requested
-        "days_per_week": requested_days or stored_profile.get("days_per_week", 5),
+        "days_per_week": clamp_days_per_week(requested_days or stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
         "fitness_goals": stored_profile.get("fitness_goals", ""),
     }
@@ -531,6 +750,119 @@ def generate_plan(profile: ProfileIn):
         day_theme_muscles=day_theme_muscles,
         evaluation_ok=evaluation_ok,
         suggestions=suggestions or [],
+    )
+
+
+@app.post("/api/plan/day/regenerate", response_model=DayActionOut)
+def regenerate_plan_day(body: DayActionIn):
+    plan, krr_reasoning = _require_stored_plan(body.user_id)
+    if body.day not in plan:
+        raise HTTPException(status_code=404, detail=f"Unknown day: {body.day}")
+
+    try:
+        df = get_exercises_df()
+        user_profile, goals = _build_user_profile_for_planner(body.user_id)
+        full_plan, _, _, full_krr, day_themes, day_theme_muscles = run_plan_cycle(
+            body.user_id,
+            df,
+            user_profile,
+            goals=goals,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("plan.day.regenerate failed user_id=%s day=%s", body.user_id, body.day)
+        raise HTTPException(status_code=500, detail="Failed to regenerate day")
+
+    plan[body.day] = full_plan.get(body.day, [])
+    krr_reasoning[body.day] = full_krr.get(body.day, "")
+    save_plan_for_user(body.user_id, plan, krr_reasoning)
+
+    logger.info(
+        "plan.day.regenerate user_id=%s day=%s exercises=%s",
+        body.user_id,
+        body.day,
+        len(plan.get(body.day, [])),
+    )
+    return DayActionOut(
+        ok=True,
+        user_id=body.user_id,
+        day=body.day,
+        message=f"{body.day} regenerated and validated.",
+        plan=plan,
+        krr_reasoning=krr_reasoning,
+        day_theme=day_themes.get(body.day),
+        day_theme_muscles=day_theme_muscles.get(body.day, []),
+    )
+
+
+@app.post("/api/plan/day/reduce", response_model=DayActionOut)
+def reduce_plan_day_volume(body: DayReduceIn):
+    plan, krr_reasoning = _require_stored_plan(body.user_id)
+    if body.day not in plan:
+        raise HTTPException(status_code=404, detail=f"Unknown day: {body.day}")
+
+    delta = body.delta_sets if isinstance(body.delta_sets, int) and body.delta_sets > 0 else 1
+    day_exercises = plan.get(body.day, []) or []
+    updated = []
+    for ex in day_exercises:
+        ex_next = dict(ex)
+        sets = int(ex_next.get("sets", 3))
+        ex_next["sets"] = max(2, sets - delta)
+        updated.append(ex_next)
+    plan[body.day] = updated
+    save_plan_for_user(body.user_id, plan, krr_reasoning)
+
+    logger.info(
+        "plan.day.reduce user_id=%s day=%s delta=%s exercises=%s",
+        body.user_id,
+        body.day,
+        delta,
+        len(updated),
+    )
+    return DayActionOut(
+        ok=True,
+        user_id=body.user_id,
+        day=body.day,
+        message=f"Reduced sets for {body.day} by {delta} (min set safety preserved).",
+        plan=plan,
+        krr_reasoning=krr_reasoning,
+    )
+
+
+@app.post("/api/plan/day/swap", response_model=DayActionOut)
+def swap_plan_day_exercises(body: DaySwapIn):
+    plan, krr_reasoning = _require_stored_plan(body.user_id)
+    if body.day not in plan:
+        raise HTTPException(status_code=404, detail=f"Unknown day: {body.day}")
+
+    exercises = list(plan.get(body.day, []) or [])
+    if len(exercises) < 2:
+        raise HTTPException(status_code=400, detail="Not enough exercises to swap")
+
+    idx_a = body.index_a if isinstance(body.index_a, int) else 0
+    idx_b = body.index_b if isinstance(body.index_b, int) else 1
+    if idx_a < 0 or idx_b < 0 or idx_a >= len(exercises) or idx_b >= len(exercises):
+        raise HTTPException(status_code=400, detail="Swap indices out of range")
+
+    exercises[idx_a], exercises[idx_b] = exercises[idx_b], exercises[idx_a]
+    plan[body.day] = exercises
+    save_plan_for_user(body.user_id, plan, krr_reasoning)
+
+    logger.info(
+        "plan.day.swap user_id=%s day=%s index_a=%s index_b=%s",
+        body.user_id,
+        body.day,
+        idx_a,
+        idx_b,
+    )
+    return DayActionOut(
+        ok=True,
+        user_id=body.user_id,
+        day=body.day,
+        message=f"Swapped exercises at positions {idx_a + 1} and {idx_b + 1} for {body.day}.",
+        plan=plan,
+        krr_reasoning=krr_reasoning,
     )
 
 
@@ -588,9 +920,44 @@ def get_explanation(
 def chat(body: ChatIn):
     """Chat with the workout planner agent. Includes profile context if available."""
     prof = load_profile(body.user_id)
+    stored = load_plan_for_user(body.user_id)
+
+    plan_summary = body.plan_summary
+    krr_summary = body.krr_summary
+    if stored:
+        saved_plan, saved_krr = stored
+        if not plan_summary:
+            plan_summary = _summarize_saved_plan(saved_plan)
+        if not krr_summary:
+            krr_summary = _summarize_saved_krr(saved_krr)
+
+    if _is_progress_query(body.message):
+        progress_reply = _build_progress_reply(body.user_id, prof)
+        append_chat_turn_to_profile(body.user_id, body.message, progress_reply)
+        logger.info(
+            "chat.progress user_id=%s message=\"%s\" has_saved_plan=%s checkins=%s",
+            body.user_id,
+            _clip(body.message, 120),
+            stored is not None,
+            len(prof.get("feedback_history", []) or []),
+        )
+        return ChatOut(response=progress_reply)
+
     profile_context = None
     if prof.get("onboarding_complete"):
         profile_context = f"User profile: Goals={prof.get('fitness_goals', '')}, Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
+
+    feedback = prof.get("feedback_history", []) or []
+    soreness_values = [float(item.get("soreness")) for item in feedback if isinstance(item, dict) and item.get("soreness") is not None]
+    if soreness_values:
+        avg_soreness = sum(soreness_values) / len(soreness_values)
+        latest_soreness = soreness_values[-1]
+        progress_context = (
+            f"Recovery tracking: {len(soreness_values)} soreness check-ins recorded; "
+            f"latest={latest_soreness:.1f}/5, average={avg_soreness:.2f}/5."
+        )
+        profile_context = (profile_context + "\n" + progress_context) if profile_context else progress_context
+
     kb_context = None
     try:
         # Ground chat in the exercise KB: beginner exercises filtered by injuries.
@@ -609,18 +976,21 @@ def chat(body: ChatIn):
     llm = LLM()
     response = llm.chat(
         user_message=body.message,
-        plan_summary=body.plan_summary,
-        krr_summary=body.krr_summary,
+        plan_summary=plan_summary,
+        krr_summary=krr_summary,
         user_id=body.user_id,
         profile_context=(profile_context + ("\n" + kb_context if kb_context else "")) if profile_context else kb_context,
     )
+    if response and "Based on your" not in response:
+        response = f"Based on your profile, exercise DB, and KRR rules: {response}"
+    append_chat_turn_to_profile(body.user_id, body.message, response)
     logger.info(
         "chat.reply user_id=%s message=\"%s\" onboarding=%s plan_summary=%s krr_summary=%s response_chars=%s",
         body.user_id,
         _clip(body.message, 120),
         prof.get("onboarding_complete"),
-        bool(body.plan_summary),
-        bool(body.krr_summary),
+        bool(plan_summary),
+        bool(krr_summary),
         len(response or ""),
     )
     return ChatOut(response=response)

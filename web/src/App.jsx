@@ -1,53 +1,163 @@
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 const API = '/api'
+const DEV_MODE = import.meta.env.DEV
+const ATHLETE_STORAGE_KEY = 'workout_athlete_profiles'
+const ATHLETE_ACTIVE_KEY = 'workout_active_athlete_id'
 
 const MUSCLE_OPTIONS = [
   'chest', 'pectorals', 'back', 'lats', 'upper back', 'traps', 'shoulders', 'delts', 'arms', 'biceps', 'triceps',
-  'legs',
-  'quads', 'hamstrings', 'glutes', 'calves', 'abs', 'forearms', 'adductors', 'abductors'
+  'legs', 'quads', 'hamstrings', 'glutes', 'calves', 'abs', 'forearms', 'adductors', 'abductors',
 ]
+
+const DEFAULT_PROFILE = {
+  injury_muscles: [],
+  intensity: 3,
+  feedback_history: [],
+  onboarding_complete: false,
+  fitness_goals: '',
+  days_per_week: 5,
+  soreness_per_muscle: {},
+  weekly_volume_per_muscle: {},
+}
+
+const ONBOARDING_STEPS = ['Goals', 'Days / Week', 'Injuries', 'Intensity']
 
 function dayNumber(label) {
   const m = String(label || '').match(/\d+/)
   return m ? Number(m[0]) : 0
 }
 
+function formatDayLabel(label) {
+  return String(label || '').replace(/^Day(\d+)$/i, 'Day $1')
+}
+
 function sortedDayLabelsFromPlan(plan) {
   return Object.keys(plan || {}).sort((a, b) => dayNumber(a) - dayNumber(b))
 }
 
-const ONBOARDING_MESSAGE =
-  "Hi! I'm your workout coach. I'll ask you a few quick questions here in chat to set up your profile before we generate your plan.";
+function clip(text, n = 120) {
+  if (!text) return ''
+  return text.length > n ? `${text.slice(0, n)}...` : text
+}
+
+function toTitleCase(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (char) => char.toUpperCase())
+}
+
+function extractQuotedValues(text) {
+  const values = []
+  const re = /"([^"]+)"|'([^']+)'/g
+  let m = re.exec(text)
+  while (m) {
+    const v = (m[1] || m[2] || '').trim()
+    if (v) values.push(v)
+    m = re.exec(text)
+  }
+  return values
+}
+
+function parseSymbolicSummary(reasoningText) {
+  const raw = String(reasoningText || '')
+  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
+  const themeLine = lines.find((line) => /^Inference\s*\(/i.test(line)) || null
+  const resultLine = lines.find((line) => /^Result\s*:/i.test(line)) || null
+  const recommendedLines = lines.filter((line) => /recommended\(/i.test(line))
+  const quoted = recommendedLines.flatMap((line) => extractQuotedValues(line))
+  const cleaned = Array.from(new Set(quoted.filter((x) => x.toLowerCase() !== 'athlete')))
+  return {
+    themeLine,
+    resultLine,
+    recommendations: cleaned,
+  }
+}
+
+function sorenessClass(value) {
+  if (value >= 4) return 'heat-high'
+  if (value >= 3) return 'heat-mid'
+  if (value >= 2) return 'heat-low'
+  return 'heat-none'
+}
+
+function makeAthleteId(name) {
+  const base = String(name || 'athlete')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 24) || 'athlete'
+  const suffix = Math.random().toString(36).slice(2, 6)
+  return `athlete_${base}_${suffix}`
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function summarizeProfileUpdates(updates) {
+  const parts = []
+  if (Object.prototype.hasOwnProperty.call(updates, 'injury_muscles')) {
+    const injuries = updates.injury_muscles || []
+    parts.push(injuries.length ? `Injuries: ${injuries.join(', ')}` : 'Injuries: none')
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'days_per_week')) {
+    parts.push(`Days/week: ${updates.days_per_week}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'intensity')) {
+    parts.push(`Intensity: ${updates.intensity}`)
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, 'fitness_goals')) {
+    parts.push(`Goals: ${updates.fitness_goals}`)
+  }
+  return parts
+}
 
 export default function App() {
+  const [athletes, setAthletes] = useState([])
+  const [activeAthleteId, setActiveAthleteId] = useState('')
+  const [newAthleteOpen, setNewAthleteOpen] = useState(false)
+  const [newAthleteName, setNewAthleteName] = useState('')
+  const [renameAthleteOpen, setRenameAthleteOpen] = useState(false)
+  const [renameAthleteName, setRenameAthleteName] = useState('')
+  const [athleteMenuOpen, setAthleteMenuOpen] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [userId, setUserId] = useState('')
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [profile, setProfile] = useState({
-    injury_muscles: [],
-    intensity: 3,
-    feedback_history: [],
-    onboarding_complete: false,
-    fitness_goals: '',
-    days_per_week: 5,
-  })
-  const [onboardingGoals, setOnboardingGoals] = useState('')
-  const [onboardingDays, setOnboardingDays] = useState(5)
-  const [chatMessages, setChatMessages] = useState([
-    { role: 'agent', text: ONBOARDING_MESSAGE },
-  ])
+  const [profile, setProfile] = useState(DEFAULT_PROFILE)
+  const [profileEdit, setProfileEdit] = useState(false)
+
+  const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
-  const [explanationCache, setExplanationCache] = useState({})
-  const [expandedThinking, setExpandedThinking] = useState({})
-  const [explanationLoading, setExplanationLoading] = useState(null)
-  const [collapsedDays, setCollapsedDays] = useState({})
+  const [collapsedPlanMsg, setCollapsedPlanMsg] = useState({})
+
+  const hasConversation = useMemo(
+    () => chatMessages.some((m) => m.role === 'assistant' || m.role === 'user'),
+    [chatMessages],
+  )
+
+  const [activePlan, setActivePlan] = useState(null)
+  const [selectedDay, setSelectedDay] = useState(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const [savePreviousWeeks, setSavePreviousWeeks] = useState(true)
+  const [planHistory, setPlanHistory] = useState([])
+  const [lastRequestId, setLastRequestId] = useState(null)
+
+  const [showAnalytics, setShowAnalytics] = useState(false)
   const [feedbackSoreness, setFeedbackSoreness] = useState(3)
-  const [feedbackSent, setFeedbackSent] = useState(false)
-  const chatEndRef = useRef(null)
-  const chatInputRef = useRef(null)
-  const [isChatOnboarding, setIsChatOnboarding] = useState(false)
-  const [onboardingStep, setOnboardingStep] = useState(0) // 0 = none, 1=goals, 2=days, 3=injuries, 4=intensity
+
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerLoading, setDrawerLoading] = useState(false)
+  const [drawerDay, setDrawerDay] = useState(null)
+  const [drawerData, setDrawerData] = useState(null)
+  const [explainSectionsOpen, setExplainSectionsOpen] = useState({
+    symbolic: true,
+    policy: true,
+    llm: true,
+  })
+  const [toasts, setToasts] = useState([])
+  const toastTimersRef = useRef({})
+
   const [onboardingDraft, setOnboardingDraft] = useState({
     goals: '',
     days: 5,
@@ -55,312 +165,399 @@ export default function App() {
     intensity: 3,
   })
 
+  const chatEndRef = useRef(null)
+
+  const activeAthlete = useMemo(
+    () => athletes.find((a) => a.id === activeAthleteId) || null,
+    [athletes, activeAthleteId],
+  )
+
+  useEffect(() => {
+    let stored = []
+    try {
+      const raw = localStorage.getItem(ATHLETE_STORAGE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) stored = parsed.filter((x) => x && x.id && x.name)
+      }
+    } catch {
+      stored = []
+    }
+
+    if (!stored.length) {
+      stored = [{ id: 'athlete_default', name: 'My Athlete' }]
+    }
+
+    setAthletes(stored)
+    const lastActive = localStorage.getItem(ATHLETE_ACTIVE_KEY)
+    const fallbackId = stored[0]?.id || ''
+    setActiveAthleteId(stored.some((a) => a.id === lastActive) ? lastActive : fallbackId)
+  }, [])
+
+  useEffect(() => {
+    if (!activeAthleteId) return
+    const match = athletes.find((a) => a.id === activeAthleteId)
+    if (!match) return
+    setUserId(match.id)
+    setRenameAthleteName(match.name)
+    localStorage.setItem(ATHLETE_ACTIVE_KEY, match.id)
+  }, [activeAthleteId, athletes])
+
+  useEffect(() => {
+    if (!athletes.length) return
+    localStorage.setItem(ATHLETE_STORAGE_KEY, JSON.stringify(athletes))
+  }, [athletes])
+
+  const removeToast = (id) => {
+    const meta = toastTimersRef.current[id]
+    if (meta?.timer) window.clearTimeout(meta.timer)
+    delete toastTimersRef.current[id]
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }
+
+  const scheduleToastDismiss = (id, delayMs) => {
+    const prev = toastTimersRef.current[id]
+    if (prev?.timer) window.clearTimeout(prev.timer)
+    const delay = Math.max(0, delayMs)
+    const timer = window.setTimeout(() => {
+      removeToast(id)
+    }, delay)
+    toastTimersRef.current[id] = {
+      timer,
+      startedAt: Date.now(),
+      remainingMs: delay,
+    }
+  }
+
+  const pauseToastDismiss = (id) => {
+    const meta = toastTimersRef.current[id]
+    if (!meta || !meta.timer) return
+    window.clearTimeout(meta.timer)
+    const elapsed = Date.now() - meta.startedAt
+    const remaining = Math.max(0, meta.remainingMs - elapsed)
+    toastTimersRef.current[id] = {
+      timer: null,
+      startedAt: Date.now(),
+      remainingMs: remaining,
+    }
+  }
+
+  const resumeToastDismiss = (id) => {
+    const meta = toastTimersRef.current[id]
+    if (!meta) return
+    if (meta.remainingMs <= 0) {
+      removeToast(id)
+      return
+    }
+    scheduleToastDismiss(id, meta.remainingMs)
+  }
+
+  const pushToast = (type, text) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setToasts((prev) => [...prev, { id, type, text }])
+    scheduleToastDismiss(id, 2400)
+  }
+
+  useEffect(() => {
+    return () => {
+      Object.values(toastTimersRef.current).forEach((meta) => {
+        if (meta?.timer) window.clearTimeout(meta.timer)
+      })
+      toastTimersRef.current = {}
+    }
+  }, [])
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
 
   useEffect(() => {
-    if (!sidebarOpen && !chatLoading) chatInputRef.current?.focus()
-  }, [sidebarOpen, chatLoading])
+    try {
+      const stored = localStorage.getItem('workout_plan_history')
+      if (stored) setPlanHistory(JSON.parse(stored))
+    } catch {
+      setPlanHistory([])
+    }
+  }, [])
 
-  const startChatOnboarding = (profFromApi) => {
-    if (isChatOnboarding || profile.onboarding_complete) return
-    const base = profFromApi || profile
-    setIsChatOnboarding(true)
-    setOnboardingStep(1)
-    setOnboardingDraft({
-      goals: base.fitness_goals || '',
-      days: base.days_per_week ?? 5,
-      injuries: base.injury_muscles || [],
-      intensity: base.intensity ?? 3,
-    })
-    setChatMessages((prev) => [
-      ...prev,
-      { role: 'agent', text: "Before I build your plan, tell me about your fitness goals. What are you trying to achieve?" },
-    ])
-  }
+  useEffect(() => {
+    try {
+      localStorage.setItem('workout_plan_history', JSON.stringify(planHistory.slice(0, 12)))
+    } catch {
+      // noop
+    }
+  }, [planHistory])
 
   useEffect(() => {
     const id = (userId || '').trim()
     if (!id) {
-      setProfile({ injury_muscles: [], intensity: 3, feedback_history: [] })
-      setIsChatOnboarding(false)
-      setOnboardingStep(0)
+      setProfile(DEFAULT_PROFILE)
+      setActivePlan(null)
+      setSelectedDay(null)
       return
     }
+
     fetch(`${API}/profile?user_id=${encodeURIComponent(id)}`)
-      .then((r) => r.ok ? r.json() : {})
+      .then((r) => (r.ok ? r.json() : {}))
       .then((p) => {
-        const prof = {
-          injury_muscles: p.injury_muscles || [],
-          intensity: p.intensity ?? 3,
-          feedback_history: p.feedback_history || [],
-          onboarding_complete: p.onboarding_complete ?? false,
-          fitness_goals: p.fitness_goals || '',
-          days_per_week: p.days_per_week ?? 5,
+        const next = {
+          ...DEFAULT_PROFILE,
+          ...p,
+          soreness_per_muscle: p.soreness_per_muscle || {},
+          weekly_volume_per_muscle: p.weekly_volume_per_muscle || {},
         }
-        setProfile(prof)
-        if (!prof.onboarding_complete) {
-          // Start chat-based onboarding instead of forcing sidebar work
-          startChatOnboarding(prof)
-        } else {
-          setOnboardingGoals(prof.fitness_goals)
-          setOnboardingDays(prof.days_per_week)
-        }
+        setProfile(next)
+        setOnboardingDraft({
+          goals: next.fitness_goals || '',
+          days: next.days_per_week ?? 5,
+          injuries: next.injury_muscles || [],
+          intensity: next.intensity ?? 3,
+        })
       })
-      .catch(() => setProfile({
-        injury_muscles: [],
-        intensity: 3,
-        feedback_history: [],
-        onboarding_complete: false,
-        fitness_goals: '',
-        days_per_week: 5,
-      }))
+      .catch(() => setProfile(DEFAULT_PROFILE))
   }, [userId])
 
-  const saveProfile = async (updates) => {
-    const id = (userId || 'user').trim()
-    if (!id) return
-    try {
-      await fetch(`${API}/profile`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, ...updates }),
-      })
-      setProfile((prev) => ({ ...prev, ...updates }))
-    } catch (e) {
-      console.error(e)
+  const createAthlete = () => {
+    const name = newAthleteName.trim()
+    if (!name) {
+      pushToast('error', 'Enter an athlete name first.')
+      return
     }
+    const id = makeAthleteId(name)
+    const next = { id, name }
+    setAthletes((prev) => [next, ...prev])
+    setActiveAthleteId(id)
+    setNewAthleteName('')
+    setNewAthleteOpen(false)
+    appendSystem(`Created athlete profile: ${name}`)
+    pushToast('success', `Switched to ${name}`)
   }
 
-  const toggleInjury = (muscle) => {
-    const next = profile.injury_muscles.includes(muscle)
-      ? profile.injury_muscles.filter((m) => m !== muscle)
-      : [...profile.injury_muscles, muscle]
-    saveProfile({ injury_muscles: next })
+  const renameAthlete = () => {
+    const id = activeAthleteId
+    const name = renameAthleteName.trim()
+    if (!id) {
+      pushToast('error', 'No athlete selected.')
+      return
+    }
+    if (!name) {
+      pushToast('error', 'Enter a new athlete name.')
+      return
+    }
+    setAthletes((prev) => prev.map((a) => (a.id === id ? { ...a, name } : a)))
+    setRenameAthleteOpen(false)
+    setAthleteMenuOpen(false)
+    appendSystem(`Renamed athlete to: ${name}`)
+    pushToast('success', `Renamed to ${name}`)
   }
 
-  const submitFeedback = async () => {
-    const id = (userId || 'user').trim()
+  const requestDeleteAthlete = () => {
+    const id = activeAthleteId
+    if (!id) {
+      pushToast('error', 'No athlete selected.')
+      return
+    }
+    if (athletes.length <= 1) {
+      pushToast('error', 'You must keep at least one athlete profile.')
+      return
+    }
+    setDeleteConfirmOpen(true)
+  }
+
+  const deleteAthlete = () => {
+    const id = activeAthleteId
     if (!id) return
+    const target = athletes.find((a) => a.id === id)
+    const remaining = athletes.filter((a) => a.id !== id)
+    const nextActive = remaining[0]?.id || ''
+    setAthletes(remaining)
+    setActiveAthleteId(nextActive)
+    setActivePlan(null)
+    setSelectedDay(null)
+    setProfile(DEFAULT_PROFILE)
+    setDeleteConfirmOpen(false)
+    setAthleteMenuOpen(false)
+    appendSystem(`Deleted athlete profile: ${target?.name || id}`)
+    pushToast('success', `Deleted ${target?.name || 'athlete'} and switched profile.`)
+  }
+
+  const stateRows = useMemo(() => {
+    const soreness = profile.soreness_per_muscle || {}
+    const volume = profile.weekly_volume_per_muscle || {}
+    const muscles = Array.from(new Set([...Object.keys(soreness), ...Object.keys(volume)])).sort()
+    const cap = Math.max(12, Math.min(28, Math.round(4 * (profile.intensity ?? 3) + 8)))
+    return {
+      cap,
+      rows: muscles.map((muscle) => ({
+        muscle,
+        soreness: Number(soreness[muscle] ?? 0),
+        volume: Number(volume[muscle] ?? 0),
+      })),
+    }
+  }, [profile])
+
+  const dayLabels = useMemo(() => sortedDayLabelsFromPlan(activePlan?.plan || {}), [activePlan])
+
+  useEffect(() => {
+    if (!selectedDay && dayLabels.length) setSelectedDay(dayLabels[0])
+    if (selectedDay && dayLabels.length && !dayLabels.includes(selectedDay)) setSelectedDay(dayLabels[0])
+  }, [dayLabels, selectedDay])
+
+  const selectedDayExercises = useMemo(() => {
+    if (!activePlan || !selectedDay) return []
+    return activePlan.plan?.[selectedDay] || []
+  }, [activePlan, selectedDay])
+
+  const selectedDayInsights = useMemo(() => {
+    if (!selectedDay) {
+      return {
+        totalSets: 0,
+        recoveryLoad: 'Light',
+        estMinutes: 0,
+        focusMuscles: [],
+      }
+    }
+
+    const totalSets = selectedDayExercises.reduce((acc, ex) => acc + Number(ex.sets || 0), 0)
+    const estMinutes = Math.max(20, Math.round((selectedDayExercises.length * 7 + totalSets * 1.5) / 5) * 5)
+    const recoveryLoad = totalSets >= 20 ? 'High' : totalSets >= 14 ? 'Moderate' : 'Light'
+    const fromTheme = (activePlan?.day_theme_muscles?.[selectedDay] || []).map((m) => String(m).trim()).filter(Boolean)
+    const fromExercises = Array.from(new Set(selectedDayExercises.map((ex) => String(ex.target || '').trim()).filter(Boolean)))
+
+    return {
+      totalSets,
+      recoveryLoad,
+      estMinutes,
+      focusMuscles: (fromTheme.length ? fromTheme : fromExercises).slice(0, 4),
+    }
+  }, [activePlan, selectedDay, selectedDayExercises])
+
+  const topSorenessSignals = useMemo(() => {
+    return Object.entries(profile.soreness_per_muscle || {})
+      .map(([muscle, score]) => ({ muscle, score: Number(score || 0) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2)
+  }, [profile.soreness_per_muscle])
+
+  const projectedStateRows = useMemo(() => {
+    if (stateRows.rows.length > 0 || !activePlan?.plan) return []
+    const totals = {}
+    Object.values(activePlan.plan || {}).forEach((dayExercises) => {
+      ;(dayExercises || []).forEach((ex) => {
+        const target = String(ex.target || '').trim().toLowerCase()
+        if (!target) return
+        totals[target] = (totals[target] || 0) + Number(ex.sets || 0)
+      })
+    })
+    return Object.entries(totals)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([muscle, volume]) => ({
+        muscle,
+        soreness: 0,
+        volume: Number(volume),
+      }))
+  }, [activePlan, stateRows.rows.length])
+
+  const saveProfile = async (updates) => {
+    const id = (userId || '').trim()
+    if (!id) return
+    await fetch(`${API}/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: id, ...updates }),
+    })
+    setProfile((prev) => ({ ...prev, ...updates }))
+  }
+
+  const resolveIntent = async (id, message) => {
     try {
-      const res = await fetch(`${API}/feedback`, {
+      const res = await fetch(`${API}/intent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, soreness: feedbackSoreness }),
+        body: JSON.stringify({ user_id: id, message }),
       })
-      if (res.ok) {
-        setFeedbackSent(true)
-        setProfile((prev) => ({
-          ...prev,
-          feedback_history: [...(prev.feedback_history || []), { soreness: feedbackSoreness }].slice(-20),
-        }))
+      if (!res.ok) return { intent: 'chat', days_per_week: null, assistant_reply: null }
+      const data = await res.json()
+      return {
+        intent: data.intent || 'chat',
+        days_per_week: Number.isInteger(data.days_per_week) ? data.days_per_week : null,
+        assistant_reply: typeof data.assistant_reply === 'string' ? data.assistant_reply : null,
       }
-    } catch (e) {
-      console.error(e)
+    } catch {
+      return { intent: 'chat', days_per_week: null, assistant_reply: null }
     }
   }
 
-  const toggleDayCollapsed = (msgIdx, day) => {
-    setCollapsedDays((prev) => ({ ...prev, [`${msgIdx}-${day}`]: !prev[`${msgIdx}-${day}`] }))
-  }
+  const inferProfileUpdatesFromMessage = (message) => {
+    const text = String(message || '').toLowerCase()
+    const updates = {}
 
-  const fetchExplanation = async (msgIdx, day) => {
-    const id = (userId || 'user').trim()
-    const key = `${msgIdx}-${day}`
-    if (explanationCache[key]) {
-      setExpandedThinking((prev) => ({ ...prev, [key]: !prev[key] }))
-      return
-    }
-    setExplanationLoading(key)
-    try {
-      const res = await fetch(`${API}/explanation?day=${encodeURIComponent(day)}&user_id=${encodeURIComponent(id)}`)
-      const data = res.ok ? await res.json() : null
-      setExplanationCache((prev) => ({
-        ...prev,
-        [key]: data ? { krr_reasoning: data.krr_reasoning || '', llm_explanation: data.llm_explanation || '' } : { error: res.statusText },
-      }))
-      setExpandedThinking((prev) => ({ ...prev, [key]: true }))
-    } catch (e) {
-      setExplanationCache((prev) => ({ ...prev, [key]: { error: e.message } }))
-      setExpandedThinking((prev) => ({ ...prev, [key]: true }))
-    } finally {
-      setExplanationLoading(null)
-    }
-  }
-
-  const toggleThinking = (msgIdx, day) => {
-    const key = `${msgIdx}-${day}`
-    if (explanationCache[key]) setExpandedThinking((prev) => ({ ...prev, [key]: !prev[key] }))
-    else fetchExplanation(msgIdx, day)
-  }
-
-  const handleOnboardingTurn = async (msg) => {
-    const text = msg.trim()
-    const textLower = text.toLowerCase()
-    const numberWords = { three: 3, four: 4, five: 5, six: 6, seven: 7 }
-
-    const parseDays = () => {
-      const mNum = textLower.match(/\d+/)
-      if (mNum) return Number(mNum[0])
-      for (const [w, n] of Object.entries(numberWords)) {
-        if (textLower.includes(w)) return n
-      }
-      return NaN
-    }
-
-    const parseIntensity = () => {
-      const m = textLower.match(/\d+(\.\d+)?/)
-      if (m) return parseFloat(m[0])
-      return NaN
-    }
-
-    const normalizeInjuryToken = (tok) => {
-      const t = (tok || '').trim().toLowerCase()
-      if (!t) return null
-      const aliases = {
-        shoulder: 'shoulders',
-        pec: 'chest',
-        pectoral: 'chest',
-        chest: 'chest',
-        shoulders: 'shoulders',
-        back: 'back',
-        lowback: 'back',
-        'lower back': 'back',
-        arm: 'arms',
-        arms: 'arms',
-        elbow: 'arms',
-        wrist: 'forearms',
-        forearm: 'forearms',
-        knee: 'legs',
-        knees: 'legs',
-        leg: 'legs',
-        legs: 'legs',
-        core: 'abs',
-        abs: 'abs',
-      }
-      const mapped = aliases[t] || t
-      // Accept only known options (so we can enforce backend constraints reliably)
-      return MUSCLE_OPTIONS.includes(mapped) ? mapped : null
-    }
-
-    const parseInjuries = () => {
-      if (/^(none|no injury|no injuries|nothing)$/i.test(textLower)) return []
-      const raw = textLower.split(/[,\n]/).map((s) => s.trim()).filter(Boolean)
-      const mapped = raw.map(normalizeInjuryToken).filter(Boolean)
-      // Deduplicate
-      return [...new Set(mapped)]
-    }
-
-    // Step 1: goals
-    if (onboardingStep === 1) {
-      const cleaned = text.replace(/\s+/g, ' ').trim()
-      const hasAlpha = /[a-zA-Z]/.test(cleaned)
-      if (!cleaned || cleaned.length < 4 || !hasAlpha || /^(idk|dont know|not sure|none)$/i.test(cleaned)) {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'agent', text: 'Tell me your goal in one short line (e.g. build muscle, get stronger, lose fat). If you’re unsure, pick one.' },
-        ])
-        return
-      }
-      setOnboardingDraft((prev) => ({ ...prev, goals: cleaned }))
-      setOnboardingStep(2)
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'agent', text: 'Great. How many days per week do you want to work out? (3–7)' },
-      ])
-      return
-    }
-
-    // Step 2: days per week
-    if (onboardingStep === 2) {
-      const days = parseDays()
-      if (!days || days < 3 || days > 7) {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'agent', text: 'Please reply with a number between 3 and 7 (e.g. 5).' },
-        ])
-        return
-      }
-      setOnboardingDraft((prev) => ({ ...prev, days }))
-      setOnboardingStep(3)
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'agent', text: "Any injuries or areas to avoid? Reply with comma-separated items (e.g. shoulders, back, knees) or say 'none'." },
-      ])
-      return
-    }
-
-    // Step 3: injuries
-    if (onboardingStep === 3) {
-      const injuries = parseInjuries()
-      if (!/^(none|no injury|no injuries|nothing)$/i.test(textLower) && injuries.length === 0) {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'agent', text: `I didn’t recognize that. Try: chest, shoulders, back, arms, legs, abs, forearms (comma-separated) or 'none'.` },
-        ])
-        return
-      }
-      setOnboardingDraft((prev) => ({ ...prev, injuries }))
-      setOnboardingStep(4)
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'agent', text: 'Last one: how intense should training feel from 1 (very light) to 5 (hard but manageable)?' },
-      ])
-      return
-    }
-
-    // Step 4: intensity
-    if (onboardingStep === 4) {
-      let intensity = parseIntensity()
-      if (!intensity || intensity < 1 || intensity > 5) {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'agent', text: 'Choose an intensity between 1 and 5 (you can say just the number).' },
-        ])
-        return
-      }
-      intensity = Math.max(1, Math.min(5, intensity))
-      const finalDraft = {
-        ...onboardingDraft,
-        intensity,
-      }
-      setOnboardingDraft(finalDraft)
-      // Persist profile
-      await saveProfile({
-        onboarding_complete: true,
-        fitness_goals: finalDraft.goals,
-        days_per_week: finalDraft.days,
-        injury_muscles: finalDraft.injuries,
-        intensity: finalDraft.intensity,
+    const injurySignals = /\b(injured|injury|hurt|pain|strained|strain|pulled|tear|tore|sore)\b/.test(text)
+    const recoverySignals = /\b(recovered|healed|no injuries|not injured|fully recovered)\b/.test(text)
+    if (recoverySignals) {
+      updates.injury_muscles = []
+    } else if (injurySignals) {
+      const mentioned = MUSCLE_OPTIONS.filter((muscle) => {
+        const expr = new RegExp(`\\b${escapeRegex(muscle.toLowerCase())}\\b`)
+        return expr.test(text)
       })
-      setProfile((prev) => ({
-        ...prev,
-        onboarding_complete: true,
-        fitness_goals: finalDraft.goals,
-        days_per_week: finalDraft.days,
-        injury_muscles: finalDraft.injuries,
-        intensity: finalDraft.intensity,
-      }))
-      setIsChatOnboarding(false)
-      setOnboardingStep(0)
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          role: 'agent',
-          text:
-            "Perfect, I've saved your profile:\n" +
-            `- Goals: ${finalDraft.goals}\n` +
-            `- Days/week: ${finalDraft.days}\n` +
-            `- Injuries: ${finalDraft.injuries.length ? finalDraft.injuries.join(', ') : 'none'}\n` +
-            `- Intensity: ${finalDraft.intensity}\n` +
-            'You can now say "Generate my plan" or click the Generate plan button.',
-        },
-      ])
+      if (mentioned.length) {
+        updates.injury_muscles = Array.from(new Set([...(profile.injury_muscles || []), ...mentioned]))
+      }
     }
+
+    const daysMatch = text.match(/\b([2-7])\s*[- ]?day(s)?\b/)
+    if (daysMatch) {
+      updates.days_per_week = Number(daysMatch[1])
+    }
+
+    const intensityMatch = text.match(/\bintensity\b[^\d]*([1-5](?:\.5)?)\b/)
+    if (intensityMatch) {
+      updates.intensity = Number(intensityMatch[1])
+    }
+
+    const goalMatch = text.match(/\b(goals?|goal)\s*(are|is|to)?\s*[:\-]?\s*(.+)$/)
+    if (goalMatch && goalMatch[3]) {
+      const goals = goalMatch[3].trim()
+      if (goals.length >= 4) updates.fitness_goals = goals
+    }
+
+    return updates
   }
 
-  const runGeneratePlan = async (id, daysPerWeekOverride = null) => {
+  const applyDetectedProfileUpdate = async (messageIndex, updates) => {
+    if (!updates || Object.keys(updates).length === 0) return
+    await saveProfile(updates)
+    setOnboardingDraft((prev) => ({
+      ...prev,
+      goals: updates.fitness_goals ?? prev.goals,
+      days: updates.days_per_week ?? prev.days,
+      injuries: updates.injury_muscles ?? prev.injuries,
+      intensity: updates.intensity ?? prev.intensity,
+    }))
+    setChatMessages((prev) => prev.map((m, idx) => (
+      idx === messageIndex
+        ? { ...m, pendingProfileStatus: 'applied' }
+        : m
+    )))
+    appendSystem('Profile updated and saved.')
+    pushToast('success', 'Profile card updated from confirmed changes.')
+  }
+
+  const discardDetectedProfileUpdate = (messageIndex) => {
+    setChatMessages((prev) => prev.map((m, idx) => (
+      idx === messageIndex
+        ? { ...m, pendingProfileStatus: 'discarded' }
+        : m
+    )))
+    appendSystem('Detected profile update discarded.')
+  }
+
+  const appendSystem = (text) => setChatMessages((prev) => [...prev, { role: 'system', text }])
+
+  const runGeneratePlan = async (id, daysOverride = null) => {
     const res = await fetch(`${API}/plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -369,418 +566,950 @@ export default function App() {
         name: id,
         experience_level: 'beginner',
         injury_muscles: profile.injury_muscles || [],
-        days_per_week: Number.isInteger(daysPerWeekOverride) ? daysPerWeekOverride : null,
+        days_per_week: Number.isInteger(daysOverride) ? daysOverride : null,
       }),
     })
+    const requestId = res.headers.get('X-Request-ID')
+    if (requestId) setLastRequestId(requestId)
     if (!res.ok) throw new Error(await res.text())
-    return res.json()
+    const data = await res.json()
+    return { ...data, requestId }
   }
 
-  const resolveIntent = async (id, message) => {
-    const fallback = { intent: 'chat', days_per_week: null, assistant_reply: null }
-    try {
-      const res = await fetch(`${API}/intent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, message }),
-      })
-      if (!res.ok) return fallback
-      const data = await res.json()
-      return {
-        intent: data.intent || 'chat',
-        days_per_week: Number.isInteger(data.days_per_week) ? data.days_per_week : null,
-        assistant_reply: typeof data.assistant_reply === 'string' ? data.assistant_reply : null,
-      }
-    } catch {
-      return fallback
+  const publishPlan = (data, assistantText) => {
+    const planPack = {
+      plan: data.plan || {},
+      krr_reasoning: data.krr_reasoning || {},
+      day_themes: data.day_themes || {},
+      day_theme_muscles: data.day_theme_muscles || {},
+      evaluation_ok: data.evaluation_ok,
+      suggestions: data.suggestions || [],
+      requestId: data.requestId || null,
+      createdAt: new Date().toISOString(),
+    }
+
+    setActivePlan(planPack)
+    const labels = sortedDayLabelsFromPlan(planPack.plan)
+    setSelectedDay(labels[0] || null)
+
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        text: assistantText,
+        plan: planPack.plan,
+        day_themes: planPack.day_themes,
+        krr_reasoning: planPack.krr_reasoning,
+        safetyVerified: Boolean(planPack.evaluation_ok),
+        validationText: planPack.evaluation_ok
+          ? 'Plan validated against safety constraints.'
+          : `Plan generated with suggestions: ${(planPack.suggestions || []).join(' ') || 'See policy notes.'}`,
+      },
+    ])
+
+    if (savePreviousWeeks) {
+      setPlanHistory((prev) => [
+        {
+          id: `${Date.now()}`,
+          createdAt: planPack.createdAt,
+          userId: (userId || 'user').trim(),
+          days: labels.length,
+          plan: planPack.plan,
+        },
+        ...prev,
+      ].slice(0, 12))
     }
   }
 
-  const completeOnboarding = async () => {
-    const id = (userId || 'user').trim()
-    if (!id || !onboardingGoals.trim()) return
-    const goals = onboardingGoals.trim()
-    const days = onboardingDays
-    await saveProfile({
-      onboarding_complete: true,
-      fitness_goals: goals,
-      days_per_week: days,
-    })
-    setProfile((prev) => ({
-      ...prev,
-      onboarding_complete: true,
-      fitness_goals: goals,
-      days_per_week: days,
-    }))
-    setChatMessages((prev) => [
-      ...prev,
-      { role: 'agent', text: `Great! I've saved your goals (${goals}) and ${days} days per week. Now you can generate your workout plan!` },
-    ])
+  const generatePlan = async (daysOverride = null, source = 'button') => {
+    const id = (userId || '').trim()
+    if (!id) {
+      appendSystem('Select or create an athlete profile first.')
+      return
+    }
+
+    if (!profile.onboarding_complete) {
+      appendSystem('Complete the onboarding wizard in the left panel first.')
+      return
+    }
+
+    setChatLoading(true)
+    appendSystem('Analyzing soreness and injury constraints…')
+
+    try {
+      const data = await runGeneratePlan(id, daysOverride)
+      const days = sortedDayLabelsFromPlan(data.plan || {}).length
+      const text = source === 'chat'
+        ? `Plan ready. Built ${days}-day themed schedule with rule validation and adaptation.`
+        : `Generated ${days}-day themed plan. Use day tabs on the right to inspect and control each day.`
+      publishPlan(data, text)
+    } catch (e) {
+      appendSystem(`Plan generation failed: ${e.message || 'Unknown error'}`)
+    } finally {
+      setChatLoading(false)
+    }
   }
 
-  const sendChat = async (textOverride) => {
+  const sendChat = async (textOverride = null) => {
     const msg = (textOverride ?? chatInput).trim()
     if (!msg) return
-    const id = (userId || 'user').trim()
-    setChatMessages((prev) => [...prev, { role: 'user', text: msg }])
     if (!textOverride) setChatInput('')
+    setChatMessages((prev) => [...prev, { role: 'user', text: msg }])
+
+    const id = (userId || '').trim() || 'user'
     setChatLoading(true)
     try {
-      // If onboarding isn't complete, run chat-based onboarding flow instead of normal chat.
-      if (!profile.onboarding_complete) {
-        if (!isChatOnboarding) {
-          startChatOnboarding()
-          setChatLoading(false)
-          return
-        }
-        await handleOnboardingTurn(msg)
-        setChatLoading(false)
-        return
-      }
-      const intentData = await resolveIntent(id, msg)
-      const intent = intentData.intent || 'chat'
-      const requestedDays = intentData.days_per_week
+      const intent = await resolveIntent(id, msg)
 
-      if (intent === 'profile_update') {
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            role: 'agent',
-            text:
-              intentData.assistant_reply ||
-              "Sounds like something changed! Open the Profile panel on the left to update your injuries or goals. I'll use the updated info for your next plan.",
-          },
-        ])
-        setSidebarOpen(true)
-        setChatLoading(false)
+      if (intent.intent === 'generate_plan') {
+        await generatePlan(intent.days_per_week, 'chat')
         return
       }
-      if (intent === 'generate_plan') {
-        if (!id) {
-          setChatMessages((prev) => [...prev, { role: 'agent', text: 'Enter a User ID first.' }])
-          setChatLoading(false)
-          return
+
+      if (intent.intent === 'profile_update') {
+        const inferred = inferProfileUpdatesFromMessage(msg)
+        if (Object.keys(inferred).length > 0) {
+          const detectedSummary = summarizeProfileUpdates(inferred)
+          setChatMessages((prev) => [...prev, {
+            role: 'system',
+            text: intent.assistant_reply || 'Detected profile updates. Confirm before saving.',
+            pendingProfileUpdate: inferred,
+            pendingProfileSummary: detectedSummary,
+            pendingProfileStatus: 'pending',
+          }])
+        } else {
+          appendSystem(intent.assistant_reply || 'Profile update detected. Use Edit in the left panel to apply exact fields.')
         }
-        const data = await runGeneratePlan(id, requestedDays)
-        const plan = data.plan
-        const krrReasoning = data.krr_reasoning || {}
-        const dayThemes = data.day_themes || {}
-        const suggestions = data.suggestions || []
-        let replyText = "Here's your plan. Expand a day to see exercises; tap See Thinking for reasoning."
-        if (requestedDays) replyText = `Here's a ${requestedDays}-day plan. Expand a day to see exercises; tap See Thinking for reasoning.`
-        if (intentData.assistant_reply && !requestedDays) replyText = `${intentData.assistant_reply} ${replyText}`
-        if (suggestions.length > 0) replyText += ` Note: ${suggestions.join(' ')}`
-        setChatMessages((prev) => [...prev, { role: 'agent', text: replyText, plan, day_themes: dayThemes, krr_reasoning: krrReasoning }])
-        setChatLoading(false)
         return
       }
-      let planSummary = ''
-      let krrSummary = ''
-      const lastPlanMsg = [...chatMessages].reverse().find((m) => m.role === 'agent' && m.plan)
-      if (lastPlanMsg) {
-        planSummary = Object.entries(lastPlanMsg.plan).map(([d, exs]) => `${d}: ${(exs || []).map((e) => e.name).join(', ') || 'Rest'}`).join('; ')
-        krrSummary = Object.entries(lastPlanMsg.krr_reasoning || {}).slice(0, 2).map(([, v]) => v).join(' ')
-      }
+
+      const planSummary = activePlan
+        ? sortedDayLabelsFromPlan(activePlan.plan)
+          .map((d) => `${d}: ${(activePlan.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+          .join('; ')
+        : null
+
+      const krrSummary = activePlan
+        ? Object.entries(activePlan.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+        : null
+
       const res = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, message: msg, plan_summary: planSummary || null, krr_summary: krrSummary || null }),
+        body: JSON.stringify({ user_id: id, message: msg, plan_summary: planSummary, krr_summary: krrSummary }),
       })
+      const requestId = res.headers.get('X-Request-ID')
+      if (requestId) setLastRequestId(requestId)
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
-      setChatMessages((prev) => [...prev, { role: 'agent', text: data.response }])
+      setChatMessages((prev) => [...prev, { role: 'assistant', text: data.response || 'No response.' }])
     } catch (e) {
-      setChatMessages((prev) => [...prev, { role: 'agent', text: e.message?.includes('fetch') ? 'API not reachable. Run: uvicorn api.app:app --port 8000' : (e.message || 'Something went wrong.') }])
+      appendSystem(`Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
     }
   }
 
-  const generatePlan = async () => {
-    const id = (userId || 'user').trim()
-    if (!id) {
-      setChatMessages((prev) => [...prev, { role: 'agent', text: 'Enter a User ID first.' }])
-      return
+  const submitFeedback = async () => {
+    const id = (userId || '').trim()
+    if (!id) return
+    const res = await fetch(`${API}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: id, soreness: feedbackSoreness }),
+    })
+    if (res.ok) {
+      setProfile((prev) => ({
+        ...prev,
+        feedback_history: [...(prev.feedback_history || []), { soreness: feedbackSoreness }].slice(-20),
+      }))
+      appendSystem('Feedback saved. Next plan cycle will adapt soreness policy.')
     }
-    if (!profile.onboarding_complete) {
-      // Kick off chat-based onboarding instead of forcing sidebar work
-      startChatOnboarding()
-      return
+  }
+
+  const openExplanationDrawer = async (day) => {
+    const id = (userId || '').trim()
+    if (!id || !day) return
+
+    setDrawerDay(day)
+    setDrawerOpen(true)
+    setDrawerLoading(true)
+    setDrawerData(null)
+    setExplainSectionsOpen({ symbolic: true, policy: true, llm: true })
+
+    try {
+      const res = await fetch(`${API}/explanation?day=${encodeURIComponent(day)}&user_id=${encodeURIComponent(id)}`)
+      const data = res.ok ? await res.json() : null
+      setDrawerData(data || { error: await res.text() })
+    } catch (e) {
+      setDrawerData({ error: e.message || 'Failed to fetch explanation' })
+    } finally {
+      setDrawerLoading(false)
     }
+  }
+
+  const toggleExplainSection = (key) => {
+    setExplainSectionsOpen((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const applyDayActionResult = (payload) => {
+    if (!payload?.plan) return
+    setActivePlan((prev) => {
+      const base = prev || {}
+      const nextThemes = { ...(base.day_themes || {}) }
+      const nextThemeMuscles = { ...(base.day_theme_muscles || {}) }
+      if (payload.day && payload.day_theme) nextThemes[payload.day] = payload.day_theme
+      if (payload.day && Array.isArray(payload.day_theme_muscles)) nextThemeMuscles[payload.day] = payload.day_theme_muscles
+      return {
+        ...base,
+        plan: payload.plan,
+        krr_reasoning: payload.krr_reasoning || base.krr_reasoning || {},
+        day_themes: nextThemes,
+        day_theme_muscles: nextThemeMuscles,
+      }
+    })
+    if (payload?.message) {
+      appendSystem(payload.message)
+      pushToast('success', payload.message)
+    } else {
+      pushToast('success', 'Action completed successfully.')
+    }
+  }
+
+  const regenerateDay = async () => {
+    if (!selectedDay) return
+    const id = (userId || '').trim()
+    if (!id) return
     setChatLoading(true)
     try {
-      const data = await runGeneratePlan(id)
-      const plan = data.plan
-      const krrReasoning = data.krr_reasoning || {}
-      const dayThemes = data.day_themes || {}
-      const suggestions = data.suggestions || []
-      let replyText = "Here's your plan. Expand a day to see exercises; tap See Thinking for reasoning."
-      if (suggestions.length > 0) replyText += ` Note: ${suggestions.join(' ')}`
-      setChatMessages((prev) => [...prev, { role: 'agent', text: replyText, plan, day_themes: dayThemes, krr_reasoning: krrReasoning }])
+      appendSystem(`Regenerating ${selectedDay} with current constraints…`)
+      const res = await fetch(`${API}/plan/day/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: id, day: selectedDay }),
+      })
+      const requestId = res.headers.get('X-Request-ID')
+      if (requestId) setLastRequestId(requestId)
+      if (!res.ok) throw new Error(await res.text())
+      const payload = await res.json()
+      applyDayActionResult(payload)
     } catch (e) {
-      setChatMessages((prev) => [...prev, { role: 'agent', text: 'Failed: ' + (e.message || 'Is the API running on port 8000?') }])
+      appendSystem(`Regeneration failed: ${e.message || 'Unknown error'}`)
+      pushToast('error', `Regeneration failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
     }
+  }
+
+  const reduceVolumeForDay = async () => {
+    if (!selectedDay) return
+    const id = (userId || '').trim()
+    if (!id) return
+    setChatLoading(true)
+    try {
+      const res = await fetch(`${API}/plan/day/reduce`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: id, day: selectedDay, delta_sets: 1 }),
+      })
+      const requestId = res.headers.get('X-Request-ID')
+      if (requestId) setLastRequestId(requestId)
+      if (!res.ok) throw new Error(await res.text())
+      const payload = await res.json()
+      applyDayActionResult(payload)
+    } catch (e) {
+      appendSystem(`Reduce volume failed: ${e.message || 'Unknown error'}`)
+      pushToast('error', `Reduce volume failed: ${e.message || 'Unknown error'}`)
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const swapExerciseForDay = async () => {
+    if (!selectedDay) return
+    const id = (userId || '').trim()
+    if (!id) return
+    setChatLoading(true)
+    try {
+      const res = await fetch(`${API}/plan/day/swap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: id, day: selectedDay, index_a: 0, index_b: 1 }),
+      })
+      const requestId = res.headers.get('X-Request-ID')
+      if (requestId) setLastRequestId(requestId)
+      if (!res.ok) throw new Error(await res.text())
+      const payload = await res.json()
+      applyDayActionResult(payload)
+    } catch (e) {
+      appendSystem(`Swap exercise failed: ${e.message || 'Unknown error'}`)
+      pushToast('error', `Swap exercise failed: ${e.message || 'Unknown error'}`)
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const toggleInjuryDraft = (muscle) => {
+    setOnboardingDraft((prev) => {
+      const exists = prev.injuries.includes(muscle)
+      return { ...prev, injuries: exists ? prev.injuries.filter((m) => m !== muscle) : [...prev.injuries, muscle] }
+    })
+  }
+
+  const completeOnboarding = async () => {
+    const id = (userId || '').trim()
+    if (!id) {
+      appendSystem('Select or create an athlete profile before saving onboarding.')
+      return
+    }
+    await saveProfile({
+      onboarding_complete: true,
+      fitness_goals: onboardingDraft.goals,
+      days_per_week: onboardingDraft.days,
+      injury_muscles: onboardingDraft.injuries,
+      intensity: onboardingDraft.intensity,
+    })
+    appendSystem('Onboarding complete. You can now generate a validated plan.')
   }
 
   return (
-    <div className="app">
-      {/* Left sidebar - user state */}
-      <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}>
-        <div className="sidebar-header">
-          <h2 className="sidebar-title">Your profile</h2>
-          <button type="button" className="sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close">×</button>
-        </div>
-        <div className="sidebar-body">
-          {!profile.onboarding_complete ? (
-            <section className="sidebar-section onboarding-section">
-              <h3 className="onboarding-title">Get started</h3>
-              <label className="sidebar-label">Fitness goals</label>
-              <textarea
-                value={onboardingGoals}
-                onChange={(e) => setOnboardingGoals(e.target.value)}
-                placeholder="e.g. Build muscle, lose weight, improve strength..."
-                className="onboarding-textarea"
-                rows={3}
-              />
-              <label className="sidebar-label">Days per week</label>
-              <select
-                value={onboardingDays}
-                onChange={(e) => setOnboardingDays(Number(e.target.value))}
-                className="onboarding-select"
-              >
-                <option value={3}>3 days</option>
-                <option value={4}>4 days</option>
-                <option value={5}>5 days</option>
-                <option value={6}>6 days</option>
-              </select>
+    <div className="control-center">
+      <div className="toast-stack" aria-live="polite" aria-atomic="true">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`toast toast-${toast.type}`}
+            onMouseEnter={() => pauseToastDismiss(toast.id)}
+            onMouseLeave={() => resumeToastDismiss(toast.id)}
+          >
+            <span className="toast-text">{toast.text}</span>
+            <button
+              type="button"
+              className="toast-close"
+              aria-label="Dismiss notification"
+              onClick={() => removeToast(toast.id)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <aside className="left-panel card">
+        <h2 className="panel-title">Athlete Profile & State</h2>
+        <p className="panel-subtitle">Set profile, review readiness, and track recovery.</p>
+
+        <section className="panel-section">
+          <div className="section-head">
+            <h3>Current Athlete</h3>
+            <div className="athlete-settings-wrap">
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
-                onClick={completeOnboarding}
-                disabled={!onboardingGoals.trim()}
+                className="btn btn-ghost btn-sm settings-btn"
+                aria-label="Athlete settings"
+                onClick={() => setAthleteMenuOpen((v) => !v)}
               >
-                Save profile
+                ⚙
               </button>
-            </section>
+              {athleteMenuOpen && (
+                <div className="settings-menu">
+                  <button
+                    type="button"
+                    className="settings-item"
+                    onClick={() => {
+                      setRenameAthleteOpen((v) => !v)
+                      setAthleteMenuOpen(false)
+                    }}
+                  >
+                    Rename athlete
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-item danger"
+                    onClick={() => {
+                      requestDeleteAthlete()
+                      setAthleteMenuOpen(false)
+                    }}
+                  >
+                    Delete athlete
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <p className="section-hint">Switch or manage the active athlete profile.</p>
+          <p className="profile-active-name">🧍 {activeAthlete?.name || 'No athlete selected'}</p>
+          {DEV_MODE && <p className="muted small">ID: {activeAthlete?.id || '-'}</p>}
+          {renameAthleteOpen && (
+            <div className="new-athlete-row">
+              <input
+                value={renameAthleteName}
+                onChange={(e) => setRenameAthleteName(e.target.value)}
+                placeholder="New athlete name"
+                className="user-input"
+              />
+              <button type="button" className="btn btn-primary btn-sm" onClick={renameAthlete}>Save</button>
+            </div>
+          )}
+        </section>
+
+        <section className="panel-section">
+          <div className="section-head">
+            <h3>Profile Card</h3>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setProfileEdit((v) => !v)}>
+              {profileEdit ? 'Done' : 'Edit'}
+            </button>
+          </div>
+          <p className="section-hint">These values drive plan generation and safety filters.</p>
+
+          {!profileEdit ? (
+            <div className="profile-grid">
+              <p><span className="profile-icon">🎯</span><strong> Goals:</strong> {profile.fitness_goals || 'Not set'}</p>
+              <p><span className="profile-icon">📅</span><strong> Days/week:</strong> {profile.days_per_week}</p>
+              <p><span className="profile-icon">🔥</span><strong> Intensity:</strong> {profile.intensity}</p>
+              <div className="mini-meter">
+                <div className="mini-meter-fill" style={{ width: `${Math.min(100, ((Number(profile.intensity) || 1) / 5) * 100)}%` }} />
+              </div>
+              <p><span className="profile-icon">🛡️</span><strong> Injuries:</strong> {(profile.injury_muscles || []).join(', ') || 'None'}</p>
+            </div>
           ) : (
-            <>
-              <section className="sidebar-section">
-                <label className="sidebar-label">Fitness goals</label>
-                <p className="profile-info">{profile.fitness_goals || 'Not set'}</p>
-                <label className="sidebar-label">Days per week</label>
-                <p className="profile-info">{profile.days_per_week} days</p>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    setProfile((prev) => ({ ...prev, onboarding_complete: false }))
-                    setOnboardingGoals(profile.fitness_goals || '')
-                    setOnboardingDays(profile.days_per_week || 5)
-                  }}
-                >
-                  Edit
-                </button>
-              </section>
-              <section className="sidebar-section">
-                <label className="sidebar-label">Intensity (1–5)</label>
-            <div className="intensity-row">
+            <div className="wizard-grid">
+              <p className="wizard-label">Complete setup to generate reliable plans</p>
+              <div className="wizard-steps">
+                {ONBOARDING_STEPS.map((step, idx) => (
+                  <div key={step} className="wizard-step">
+                    <span className="wizard-dot">{idx + 1}</span> {step}
+                  </div>
+                ))}
+              </div>
+
+              <label>Goals</label>
+              <input
+                value={onboardingDraft.goals}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, goals: e.target.value }))}
+                placeholder="e.g. build strength and reduce injury risk"
+              />
+
+              <label>Days / Week</label>
+              <select
+                value={onboardingDraft.days}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, days: Number(e.target.value) }))}
+              >
+                {[2, 3, 4, 5, 6, 7].map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+
+              <label>Intensity ({onboardingDraft.intensity})</label>
               <input
                 type="range"
                 min={1}
                 max={5}
                 step={0.5}
-                value={profile.intensity ?? 3}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value)
-                  setProfile((prev) => ({ ...prev, intensity: v }))
-                  saveProfile({ intensity: v })
-                }}
-                className="intensity-slider"
+                value={onboardingDraft.intensity}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: Number(e.target.value) }))}
               />
-              <span className="intensity-value">{profile.intensity ?? 3}</span>
+
+              <label>Injury muscles</label>
+              <div className="chips">
+                {MUSCLE_OPTIONS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={`chip ${onboardingDraft.injuries.includes(m) ? 'chip-active' : ''}`}
+                    onClick={() => toggleInjuryDraft(m)}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+
+              <button type="button" className="btn btn-primary" onClick={completeOnboarding}>Save profile</button>
             </div>
-          </section>
-          <section className="sidebar-section">
-            <label className="sidebar-label">Injuries (tap to toggle)</label>
-            <div className="injury-chips">
-              {MUSCLE_OPTIONS.map((m) => (
+          )}
+        </section>
+
+        <section className="panel-section">
+          <h3>Current Training State</h3>
+          <p className="section-hint">Live or projected load by muscle group.</p>
+          {stateRows.rows.length === 0 && projectedStateRows.length === 0 ? (
+            <p className="muted">No tracked muscle state yet. Generate a plan and submit feedback.</p>
+          ) : (
+            <div className="state-list">
+              {stateRows.rows.length === 0 && projectedStateRows.length > 0 && (
+                <p className="muted small">Projected muscle load from current plan</p>
+              )}
+              {(stateRows.rows.length ? stateRows.rows : projectedStateRows).map((row) => (
+                <div key={row.muscle} className="state-row">
+                  <div className="state-row-top">
+                    <span>{row.muscle}</span>
+                    <span className={`heat-pill ${sorenessClass(row.soreness)}`}>soreness {row.soreness || 0}</span>
+                  </div>
+                  <div className="volume-track">
+                    <div className="volume-fill" style={{ width: `${Math.min(100, (row.volume / stateRows.cap) * 100)}%` }} />
+                  </div>
+                  <span className="muted small">{row.volume} / {stateRows.cap}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel-section">
+          <h3>Feedback & Analytics</h3>
+          <p className="section-hint">Log soreness to adapt next week automatically.</p>
+          <div className="row gap">
+            <input
+              type="range"
+              min={1}
+              max={5}
+              step={1}
+              value={feedbackSoreness}
+              onChange={(e) => setFeedbackSoreness(Number(e.target.value))}
+            />
+            <span>{feedbackSoreness}</span>
+          </div>
+          <div className="slider-labels">
+            <span>None</span>
+            <span>Very Sore</span>
+          </div>
+          <div className="row gap">
+            <button type="button" className="btn btn-primary btn-sm" onClick={submitFeedback}>Submit soreness</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAnalytics((v) => !v)}>
+              {showAnalytics ? 'Hide analytics' : 'View analytics'}
+            </button>
+          </div>
+
+          {showAnalytics && (
+            <div className="analytics-box">
+              <p className="muted small">Weekly volume distribution</p>
+              {(stateRows.rows || []).slice(0, 8).map((r) => (
+                <div key={r.muscle} className="analytic-bar-row">
+                  <span>{r.muscle}</span>
+                  <div className="analytic-bar"><div style={{ width: `${Math.min(100, (r.volume / stateRows.cap) * 100)}%` }} /></div>
+                </div>
+              ))}
+              <p className="muted small">Soreness trend: {(profile.feedback_history || []).slice(-5).map((x) => x.soreness).join(' → ') || 'No data'}</p>
+              <p className="muted small">Muscle distribution pie (text): {(stateRows.rows || []).map((r) => `${r.muscle}:${r.volume}`).join(' | ') || 'No data'}</p>
+            </div>
+          )}
+
+          <label className="toggle-row">
+            <input type="checkbox" checked={savePreviousWeeks} onChange={(e) => setSavePreviousWeeks(e.target.checked)} />
+            Auto-save weekly plans
+          </label>
+          <label className="toggle-row">
+            <input type="checkbox" checked={showHistory} onChange={(e) => setShowHistory(e.target.checked)} />
+            Show saved plans
+          </label>
+
+          {showHistory && (
+            <div className="history-list">
+              {planHistory.length === 0 && <p className="muted small">No saved weeks yet.</p>}
+              {planHistory.map((h) => (
                 <button
-                  key={m}
+                  key={h.id}
                   type="button"
-                  className={`injury-chip ${(profile.injury_muscles || []).includes(m) ? 'injury-chip--active' : ''}`}
-                  onClick={() => toggleInjury(m)}
+                  className="history-item"
+                  onClick={() => {
+                    setActivePlan({
+                      plan: h.plan,
+                      krr_reasoning: {},
+                      day_themes: {},
+                      day_theme_muscles: {},
+                      evaluation_ok: true,
+                      suggestions: [],
+                      requestId: null,
+                      createdAt: h.createdAt,
+                    })
+                    const labels = sortedDayLabelsFromPlan(h.plan)
+                    setSelectedDay(labels[0] || null)
+                    appendSystem(`Loaded previous week from ${new Date(h.createdAt).toLocaleString()}.`)
+                  }}
                 >
-                  {m}
+                  {new Date(h.createdAt).toLocaleDateString()} • {h.days} days
                 </button>
               ))}
             </div>
-          </section>
-          <section className="sidebar-section">
-            <label className="sidebar-label">Soreness feedback</label>
-            <div className="feedback-row">
-              <input
-                type="range"
-                min={1}
-                max={5}
-                step={1}
-                value={feedbackSoreness}
-                onChange={(e) => setFeedbackSoreness(Number(e.target.value))}
-                className="intensity-slider"
-              />
-              <span>{feedbackSoreness}</span>
-            </div>
-            <button type="button" className="btn btn-primary btn-sm" onClick={submitFeedback}>
-              Submit feedback
-            </button>
-            {feedbackSent && <span className="feedback-ok">Saved</span>}
-            {(profile.feedback_history || []).length > 0 && (
-              <div className="feedback-history">
-                <p className="feedback-history-title">Recent:</p>
-                {(profile.feedback_history || []).slice(-5).reverse().map((f, i) => (
-                  <p key={i} className="feedback-history-item">Soreness: {f.soreness}</p>
-                ))}
-              </div>
-            )}
-          </section>
-            </>
           )}
-        </div>
+        </section>
       </aside>
 
-      {/* Main: header + chat (centered) */}
-      <div className="main-wrap">
-        <header className="header">
-          <button type="button" className="btn btn-ghost sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open profile">
-            Profile
-          </button>
-          <h1 className="header-title">Workout Coach</h1>
-          <div className="header-actions">
-            <input
-              type="text"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-              placeholder="User ID"
-              className="header-input"
-              aria-label="User ID"
-            />
-            <button type="button" onClick={generatePlan} disabled={chatLoading} className="btn btn-primary">
-              Generate plan
+      <main className="center-panel card">
+        <div className="top-row">
+          <div className="center-headline">
+            <h1>Workout Planner</h1>
+            <p className="top-subtitle">Build safe, personalized weekly workouts</p>
+          </div>
+          <div className="top-actions">
+            <div className="athlete-picker">
+              <select
+                value={activeAthleteId}
+                onChange={(e) => {
+                  setActiveAthleteId(e.target.value)
+                  const selected = athletes.find((a) => a.id === e.target.value)
+                  if (selected) appendSystem(`Loaded athlete: ${selected.name}`)
+                }}
+                className="user-input"
+              >
+                {athletes.map((athlete) => (
+                  <option key={athlete.id} value={athlete.id}>{athlete.name}</option>
+                ))}
+              </select>
+              <button type="button" className="btn btn-ghost" onClick={() => setNewAthleteOpen((v) => !v)}>
+                {newAthleteOpen ? 'Cancel' : 'New Athlete'}
+              </button>
+            </div>
+              <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
+              Generate Plan
             </button>
           </div>
-        </header>
+        </div>
 
-        <main className="main">
-          <div className="chat">
-            {chatMessages.map((m, i) => (
-              <div key={i} className={`bubble bubble-${m.role}`}>
-                <div className="bubble-text">{m.text}</div>
-                {m.role === 'agent' && m.plan && (
-                  <div className="plan">
-                    {sortedDayLabelsFromPlan(m.plan).map((day) => {
-                      const exs = m.plan[day] || []
-                      const theme = (m.day_themes && m.day_themes[day]) || day
-                      const targets = (m.day_theme_muscles && m.day_theme_muscles[day]) || []
-                      const key = `${i}-${day}`
-                      const dayCollapsed = collapsedDays[key]
-                      const thinkingOpen = expandedThinking[key]
-                      const cached = explanationCache[key]
-                      const loading = explanationLoading === key
-                      const isRest = !exs.length
-                      return (
-                        <div key={day} className={`day-card ${isRest ? 'day-card--rest' : ''}`}>
-                          <button type="button" className="day-card-head" onClick={() => toggleDayCollapsed(i, day)}>
-                            <div className="day-card-title-wrap">
-                              <span className="day-card-title">{day} — {theme}</span>
-                              {!!targets.length && (
-                                <span className="day-card-subtitle">Targets: {targets.join(', ')}</span>
-                              )}
-                            </div>
-                            <span className="day-card-toggle">{dayCollapsed ? '▼' : '▲'}</span>
-                          </button>
-                          {!dayCollapsed && (
-                            <div className="day-card-body">
-                              {exs.length ? (
-                                <div className="day-exercises-table">
-                                  <div className="day-ex-header">
-                                    <span>Exercise</span>
-                                    <span>Sets</span>
-                                    <span>Reps</span>
-                                    <span>Target</span>
-                                  </div>
-                                  {exs.map((ex, j) => (
-                                    <div key={j} className="day-ex-row">
-                                      <span className="day-ex-name">{ex.name}</span>
-                                      <span className="day-ex-sets">{ex.sets}</span>
-                                      <span className="day-ex-reps">{ex.reps}</span>
-                                      <span className="day-ex-target">{ex.target || '—'}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p className="day-rest">Rest day — no exercises for this day.</p>
-                              )}
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-thinking"
-                                onClick={(e) => { e.stopPropagation(); toggleThinking(i, day) }}
-                                disabled={loading}
-                              >
-                                {loading ? 'Loading…' : thinkingOpen ? 'Hide thinking' : 'See Thinking'}
-                              </button>
-                              {thinkingOpen && (cached || loading) && (
-                                <div className="thinking-panel">
-                                  {loading && !cached && <p className="thinking-loading">Loading…</p>}
-                                  {cached?.error && <p className="thinking-error">{cached.error}</p>}
-                                  {cached && !cached.error && (
-                                    <>
-                                      <p className="thinking-label">KRR reasoning</p>
-                                      <pre className="thinking-text">{cached.krr_reasoning || '—'}</pre>
-                                      <p className="thinking-label">LLM explanation</p>
-                                      <pre className="thinking-text thinking-llm">{cached.llm_explanation || '—'}</pre>
-                                    </>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
+          <div className="status-strip">
+            <span className="pulse-dot" />
+            <span>Ready • Generate a plan or ask for changes</span>
+          </div>
+
+        {newAthleteOpen && (
+          <div className="new-athlete-row">
+            <input
+              value={newAthleteName}
+              onChange={(e) => setNewAthleteName(e.target.value)}
+              placeholder="Athlete name (e.g. Alex, Rehab Phase 1)"
+              className="user-input"
+            />
+            <button type="button" className="btn btn-primary btn-sm" onClick={createAthlete}>Create</button>
+          </div>
+        )}
+
+        <div className="chat-zone">
+          {!hasConversation && !chatLoading && (
+            <div className="quick-start">
+              <p className="muted">Start with one of these:</p>
+              <div className="quick-chips">
+                <button type="button" className="quick-chip" onClick={() => sendChat('Plan a 3-day split')}>
+                  Build a 3-day split
+                </button>
+                <button type="button" className="quick-chip" onClick={() => sendChat('Show my progress')}>
+                  Review training progress
+                </button>
+                <button type="button" className="quick-chip" onClick={() => sendChat('Generate my plan for this week')}>
+                  Generate this week’s plan
+                </button>
               </div>
-            ))}
-            {chatLoading && <div className="bubble bubble-agent bubble-loading">Thinking…</div>}
-            <div ref={chatEndRef} />
-          </div>
+            </div>
+          )}
 
-          <form className="chat-form" onSubmit={(e) => { e.preventDefault(); sendChat() }}>
-            <input
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              placeholder='Type "Generate my plan" or ask anything…'
-              className="chat-input"
-              disabled={chatLoading}
-              aria-label="Message"
-              ref={chatInputRef}
-            />
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={generatePlan}
-              disabled={chatLoading}
-            >
-              Generate plan
+          {chatMessages.map((m, idx) => (
+            <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
+              <p className="msg-role">{m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coach AI' : 'System'}</p>
+              <p>{m.text}</p>
+              {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
+              {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
+
+              {m.pendingProfileUpdate && (
+                <div className="detected-update-box">
+                  <p className="detected-update-label">Detected update</p>
+                  <div className="detected-update-chips">
+                    {(m.pendingProfileSummary || []).map((item) => (
+                      <span key={item} className="detected-update-chip">{item}</span>
+                    ))}
+                  </div>
+
+                  {m.pendingProfileStatus === 'pending' && (
+                    <div className="detected-update-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={() => applyDetectedProfileUpdate(idx, m.pendingProfileUpdate)}
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => discardDetectedProfileUpdate(idx)}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  )}
+
+                  {m.pendingProfileStatus === 'applied' && (
+                    <p className="detected-update-state success">Saved to profile card.</p>
+                  )}
+                  {m.pendingProfileStatus === 'discarded' && (
+                    <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
+                  )}
+                </div>
+              )}
+
+              {m.plan && (
+                <div className="plan-summary-card">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setCollapsedPlanMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                  >
+                    {collapsedPlanMsg[idx] ? 'Show summary' : 'Hide summary'}
+                  </button>
+
+                  {!collapsedPlanMsg[idx] && (
+                    <div className="plan-summary-body">
+                      {sortedDayLabelsFromPlan(m.plan).map((d) => (
+                        <div key={d} className="summary-day-card">
+                          <p className="summary-day-head">
+                            <strong>{formatDayLabel(d)}</strong>
+                            <span className="summary-day-theme">{m.day_themes?.[d] || d}</span>
+                          </p>
+                          <ul className="summary-ex-list">
+                            {(m.plan[d] || []).length === 0 && <li className="summary-ex-item muted">Rest Day</li>}
+                            {(m.plan[d] || []).map((e, exIdx) => (
+                              <li key={`${d}-${e.name}-${exIdx}`} className="summary-ex-item">
+                                {toTitleCase(e.name)}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => openExplanationDrawer(selectedDay || sortedDayLabelsFromPlan(m.plan)[0])}
+                    >
+                      View reasoning
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>Regenerate selected day</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {chatLoading && <div className="msg msg-system loading">Thinking …</div>}
+          <div ref={chatEndRef} />
+        </div>
+
+        <form
+          className="chat-input-row"
+          onSubmit={(e) => {
+            e.preventDefault()
+            sendChat()
+          }}
+        >
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            placeholder="Ask for a change (e.g. Regenerate Day 2 or make it lower impact)"
+            disabled={chatLoading}
+          />
+          <button type="submit" className="btn btn-primary" disabled={chatLoading}>Send</button>
+        </form>
+
+        {DEV_MODE && lastRequestId && <p className="muted small">Request ID: {lastRequestId}</p>}
+      </main>
+
+      <aside className="right-panel card">
+        <h2 className="panel-title">Weekly Plan View</h2>
+        <p className="panel-subtitle">Inspect each day, then explain or regenerate if needed.</p>
+
+        {!activePlan ? (
+          <div className="empty-plan">
+            <div className="empty-plan-graphic" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </div>
+            <p className="empty-plan-title">No plan generated yet</p>
+            <p className="muted">Generate a plan to populate the weekly schedule.</p>
+            <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
+              Generate Plan
             </button>
-            <button type="submit" className="btn btn-primary btn-send" disabled={chatLoading}>Send</button>
-          </form>
-        </main>
-      </div>
+          </div>
+        ) : (
+          <>
+            <div className="tabs">
+              {dayLabels.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  className={`tab ${selectedDay === d ? 'tab-active' : ''}`}
+                  onClick={() => setSelectedDay(d)}
+                >
+                  <span>{formatDayLabel(d)}</span>
+                  <small>{activePlan?.day_themes?.[d] || 'Theme'}</small>
+                </button>
+              ))}
+            </div>
 
-      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden />}
+            <div className="day-view animate-in">
+              <h3>{(activePlan.day_themes && activePlan.day_themes[selectedDay]) || formatDayLabel(selectedDay)}</h3>
+              <div className="day-insights">
+                <div className="focus-badges">
+                  {selectedDayInsights.focusMuscles.map((muscle) => (
+                    <span key={muscle} className="focus-badge">{muscle}</span>
+                  ))}
+                </div>
+                <div className="day-metrics-inline">
+                  <span><strong>Volume:</strong> {selectedDayInsights.totalSets} sets</span>
+                  <span><strong>Recovery:</strong> {selectedDayInsights.recoveryLoad}</span>
+                  <span><strong>Time:</strong> {selectedDayInsights.estMinutes} min</span>
+                </div>
+              </div>
+
+              <ol className="exercise-list">
+                {selectedDayExercises.length === 0 && <li className="exercise-item muted">Rest Day</li>}
+                {selectedDayExercises.map((ex, idx) => (
+                  <li key={`${ex.name}-${idx}`} className="exercise-item">
+                    <p className="exercise-name">{toTitleCase(ex.name)}</p>
+                    <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
+                  </li>
+                ))}
+              </ol>
+
+              <div className="day-actions row gap wrap">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => openExplanationDrawer(selectedDay)}>
+                  Explain Day
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>
+                  Regenerate Day Plan
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </aside>
+
+      <section className={`explain-drawer ${drawerOpen ? 'open' : ''}`}>
+        <div className="drawer-head">
+          <h3>Reasoning Breakdown{drawerDay ? ` — ${drawerDay}` : ''}</h3>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDrawerOpen(false)}>Close</button>
+        </div>
+
+        {drawerLoading && <p className="muted">Loading reasoning…</p>}
+        {!drawerLoading && drawerData?.error && <p className="error-text">{drawerData.error}</p>}
+
+        {!drawerLoading && drawerData && !drawerData.error && (
+          <div className="drawer-body">
+            <div className="reason-block safe">
+              <div className="reason-head">
+                <div className="reason-head-title">
+                  <h4>Symbolic Rules</h4>
+                  <span className="confidence-badge confidence-rule">Rule-grounded</span>
+                </div>
+                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
+                  {explainSectionsOpen.symbolic ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {explainSectionsOpen.symbolic && (
+                <div className="reason-content">
+                  {(() => {
+                    const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
+                    return (
+                      <>
+                        <p>✓ Excluded movements violating injury constraints.</p>
+                        {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
+                        {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
+                        {parsed.recommendations.length > 0 && (
+                          <div className="reason-list-wrap">
+                            <p className="muted small">Recommended set</p>
+                            <ul className="reason-list">
+                              {parsed.recommendations.slice(0, 8).map((name) => (
+                                <li key={name}>{toTitleCase(name)}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <details className="reason-raw">
+                          <summary>View raw symbolic trace</summary>
+                          <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
+                        </details>
+                      </>
+                    )
+                  })()}
+                </div>
+              )}
+            </div>
+
+            <div className="reason-block warning">
+              <div className="reason-head">
+                <div className="reason-head-title">
+                  <h4>Policy Adaptation</h4>
+                  <span className="confidence-badge confidence-policy">State-aware</span>
+                </div>
+                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('policy')}>
+                  {explainSectionsOpen.policy ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {explainSectionsOpen.policy && (
+                <div className="reason-content">
+                  <p>✓ Adjusted workload using soreness and weekly volume feedback.</p>
+                  <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
+                  <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
+                  {topSorenessSignals.length > 0 && (
+                    <p className="muted small">
+                      Top soreness signals: {topSorenessSignals.map((s) => `${s.muscle} (${s.score.toFixed(1)})`).join(', ')}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="reason-block">
+              <div className="reason-head">
+                <div className="reason-head-title">
+                  <h4>LLM Synthesis</h4>
+                  <span className="confidence-badge confidence-llm">LLM rationale</span>
+                </div>
+                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('llm')}>
+                  {explainSectionsOpen.llm ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {explainSectionsOpen.llm && (
+                <div className="reason-content">
+                  <p>✓ Balanced split with safety and progression constraints.</p>
+                  <p>{drawerData.llm_explanation || 'No LLM explanation available.'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {deleteConfirmOpen && (
+        <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title">
+          <div className="confirm-card">
+            <h3 id="confirm-delete-title">Delete athlete profile?</h3>
+            <p>
+              You are deleting <strong>{activeAthlete?.name || 'this athlete'}</strong>.
+              This removes it from your profile list and clears the current view.
+            </p>
+            <p className="muted small">A different athlete profile will be selected automatically.</p>
+            <div className="row gap confirm-actions">
+              <button type="button" className="btn btn-ghost" onClick={() => setDeleteConfirmOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-danger-solid" onClick={deleteAthlete}>
+                Yes, Delete
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {(drawerOpen || deleteConfirmOpen) && (
+        <div
+          className="drawer-backdrop"
+          onClick={() => {
+            if (drawerOpen) setDrawerOpen(false)
+            if (deleteConfirmOpen) setDeleteConfirmOpen(false)
+          }}
+          aria-hidden
+        />
+      )}
     </div>
   )
 }

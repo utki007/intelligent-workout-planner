@@ -1,0 +1,33 @@
+{
+  "injury_muscles": [
+    "chest"
+  ],
+  "intensity": 4.0,
+  "feedback_history": [
+    {
+      "soreness": 3.0
+    },
+    {
+      "soreness": 4.0
+    },
+    {
+      "soreness": 3.0
+    },
+    {
+      "soreness": 5.0
+    },
+    {
+      "soreness": 3.0
+    }
+  ],
+  "chat_history": [
+    {
+      "ts": 1772509373,
+      "user": "Show my progress",
+      "assistant": "Here\u2019s your tracked progress so far:\n- Profile saved: goal='weight loss and muscle gain', days/week=4, injuries=chest.\n- Latest saved plan: 4 days, 21 exercises total.\n- Recovery check-ins: 4 logged (latest 5.0/5, avg 3.75/5).\n- Muscle tracking: 0 muscles with soreness/volume state."
+    }
+  ],
+  "onboarding_complete": true,
+  "fitness_goals": "weight loss and muscle gain",
+  "days_per_week": 4
+}

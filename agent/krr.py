@@ -33,6 +33,12 @@ MUSCLE_ALIASES = {
     "arm": "biceps",
 }
 
+MUSCLE_GROUP_EXPANSIONS = {
+    "back": ["lats", "upper back", "traps", "levator scapulae"],
+    "legs": ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"],
+    "arms": ["biceps", "triceps", "forearms"],
+}
+
 
 def _normalize_muscles(target: Any) -> list[str]:
     """Normalize target to a list of muscle names (lowercase, stripped)."""
@@ -44,6 +50,21 @@ def _normalize_muscles(target: Any) -> list[str]:
     muscles = [m.strip().lower() for m in s.split(",")]
     # Map aliases to DB names
     return [MUSCLE_ALIASES.get(m, m) for m in muscles]
+
+
+def normalize_injury_muscles(injury_muscles: list[str] | None) -> set[str]:
+    """Expand aliases/groups to a canonical set used by KB and safety filters."""
+    out: set[str] = set()
+    for raw in injury_muscles or []:
+        norm = str(raw).strip().lower()
+        if not norm:
+            continue
+        if norm in MUSCLE_GROUP_EXPANSIONS:
+            out.update(MUSCLE_GROUP_EXPANSIONS[norm])
+            continue
+        mapped = MUSCLE_ALIASES.get(norm, norm)
+        out.add(mapped)
+    return out
 
 
 def load_kb(exercises_df: pd.DataFrame, user_id: str, injury_muscles: list[str]) -> None:
@@ -77,27 +98,8 @@ def load_kb(exercises_df: pd.DataFrame, user_id: str, injury_muscles: list[str])
             +trains_muscle(name, m)
 
     # Facts: user injuries (normalize to lowercase and map aliases)
-    for m in injury_muscles:
-        norm = str(m).strip().lower()
-        if not norm:
-            continue
-        # Map alias to DB name(s)
-        if norm in MUSCLE_ALIASES:
-            mapped = MUSCLE_ALIASES[norm]
-            # Some aliases map to multiple muscles (e.g. "back" -> lats, upper back, traps)
-            if norm == "back":
-                for back_muscle in ["lats", "upper back", "traps", "levator scapulae"]:
-                    +injured_muscle(user_id, back_muscle)
-            elif norm == "legs":
-                for leg_muscle in ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"]:
-                    +injured_muscle(user_id, leg_muscle)
-            elif norm == "arms":
-                for arm_muscle in ["biceps", "triceps", "forearms"]:
-                    +injured_muscle(user_id, arm_muscle)
-            else:
-                +injured_muscle(user_id, mapped)
-        else:
-            +injured_muscle(user_id, norm)
+    for m in normalize_injury_muscles(injury_muscles):
+        +injured_muscle(user_id, m)
 
 
 def query_by_muscle(muscle: str) -> list[str]:

@@ -217,7 +217,9 @@ class LLM:
             "why certain exercises were chosen or skipped (e.g. injuries), and how to adjust. "
             "Answer briefly and helpfully. If the user has already completed their profile (goals, days, injuries), "
             "do NOT ask them to provide it again — they've already set it up. If they don't have a plan yet, "
-            "offer to generate one. If they mention recovery or changes, suggest updating their profile."
+            "offer to generate one. If they mention recovery or changes, suggest updating their profile. "
+            "If context is missing or ambiguous, ask one concise clarifying question instead of guessing. "
+            "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names."
         )
         user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
 
@@ -253,7 +255,7 @@ class LLM:
         Classify the user's message intent and return structured routing hints:
         {
           "intent": "generate_plan" | "profile_update" | "chat",
-          "days_per_week": int(3-7) | null,
+                    "days_per_week": int(2-7) | null,
           "assistant_reply": str | null
         }
         """
@@ -330,6 +332,7 @@ class LLM:
         profile: dict[str, Any],
         kb_evidence: dict[str, Any],
         constraints: dict[str, Any],
+        repair_feedback: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """
         Build a KB-grounded weekly plan as strict JSON.
@@ -345,6 +348,8 @@ class LLM:
             "kb_evidence": kb_evidence,
             "constraints": constraints,
         }
+        if repair_feedback:
+            payload["repair_feedback"] = repair_feedback
         system = (
             "You are a workout planning model that must produce a weekly plan grounded in provided KB evidence.\n"
             "Return strict JSON only with this schema:\n"
@@ -368,16 +373,18 @@ class LLM:
             "- Use 3-6 exercises per training day when possible.\n"
             "- Respect constraints.max_exercises_per_day and rep/set ranges.\n"
             "- Keep plan coherent with profile goals and days_per_week.\n"
+            "- If repair_feedback exists, fix those exact issues in this output.\n"
             "- Do not output markdown. Output JSON only."
         )
 
         try:
             logger.info(
-                "llm.plan request user_id=%s days_per_week=%s goals=%s muscles=%s",
+                "llm.plan request user_id=%s days_per_week=%s goals=%s muscles=%s repair_feedback=%s",
                 user_id,
                 constraints.get("days_per_week"),
                 _clip(str(profile.get("fitness_goals", "")), 80),
                 len((kb_evidence.get("recommended_by_muscle") or {})),
+                bool(repair_feedback),
             )
             response = self._client.chat.completions.create(
                 model=self._model,

@@ -1,6 +1,6 @@
 # Agentic Workout Planner
 
-A **Knowledge Representation & Reasoning (KRR)** workout planner with **agentic behavior**. It generates personalized **3–7 day weekly plans** using pyDatalog, respects user injuries, and adapts from end-of-week soreness feedback. Optional **Azure OpenAI** provides natural-language explanations per day and chat responses.
+A **Knowledge Representation & Reasoning (KRR)** workout planner with **agentic behavior**. It generates personalized **2–7 day weekly plans** using pyDatalog, respects user injuries, and adapts from end-of-week soreness feedback. Optional **Azure OpenAI** provides natural-language explanations per day and chat responses.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ The code that reads these is in **`agent/llm.py`** (it uses `os.environ`; with `
 python main.py
 ```
 
-This creates/loads a default user (with one injury), generates a weekly plan (3–7 days depending on config/user), prints KRR reasoning per day and LLM explanations, then prompts for end-of-week soreness to update state for next week.
+This creates/loads a default user (with one injury), generates a weekly plan (2–7 days depending on config/user), prints KRR reasoning per day and LLM explanations, then prompts for end-of-week soreness to update state for next week.
 
 ### 2. FastAPI + React chat frontend (recommended)
 
@@ -94,7 +94,7 @@ npm run dev
 │   ├── krr.py               # pyDatalog KB: forbidden/recommended, reasoning
 │   └── llm.py               # Azure OpenAI wrapper (chat, intent, KB-grounded plan synthesis)
 ├── planner/
-│   ├── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (3–7 days)
+│   ├── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (2–7 days)
 │   └── splits.json          # Legacy artifact (no longer used by planner runtime)
 ├── api/
 │   └── app.py               # FastAPI: /api/plan, /api/profile, /api/explanation, /api/feedback, /api/chat
@@ -109,7 +109,7 @@ npm run dev
 └── README.md
 ```
 
-## Dynamic Plan Synthesis (3–7 days)
+## Dynamic Plan Synthesis (2–7 days)
 
 The planner does **not** use hardcoded split presets. Instead, it:
 
@@ -126,7 +126,7 @@ Only **beginner** exercises are recommended; any exercise that trains a muscle i
 1. **Memory** — AgentState (soreness per muscle, weekly volume, missed sessions).
 2. **Goals** — AgentGoals (target soreness range 1–3, max sets per muscle per week).
 3. **Decision** — DecisionPolicy adjusts sets/volume and prioritizes muscles.
-4. **Plan** — Weekly planner uses KRR evidence + LLM synthesis + policy checks → **N days (3–7)**, up to 6 exercises per day.
+4. **Plan** — Weekly planner uses KRR evidence + LLM synthesis + policy checks → **N days (2–7)**, up to 6 exercises per day.
 5. **Evaluate** — PlanEvaluation flags overtraining and suggests modifications.
 6. **Feedback** — User reports soreness → state updated → next week adapts.
 
