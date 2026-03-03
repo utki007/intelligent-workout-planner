@@ -1,33 +1,33 @@
 {
   "injury_muscles": [
-    "chest"
+    "chest",
+    "pectorals",
+    "back"
   ],
-  "intensity": 4.0,
-  "feedback_history": [
-    {
-      "soreness": 3.0
-    },
-    {
-      "soreness": 4.0
-    },
-    {
-      "soreness": 3.0
-    },
-    {
-      "soreness": 5.0
-    },
-    {
-      "soreness": 3.0
-    }
-  ],
+  "intensity": 3.5,
   "chat_history": [
     {
       "ts": 1772509373,
       "user": "Show my progress",
       "assistant": "Here\u2019s your tracked progress so far:\n- Profile saved: goal='weight loss and muscle gain', days/week=4, injuries=chest.\n- Latest saved plan: 4 days, 21 exercises total.\n- Recovery check-ins: 4 logged (latest 5.0/5, avg 3.75/5).\n- Muscle tracking: 0 muscles with soreness/volume state."
+    },
+    {
+      "ts": 1772511209,
+      "user": "view my progress",
+      "assistant": "Here\u2019s your tracked progress so far:\n- Profile saved: goal='weight loss and muscle gain', days/week=4, injuries=chest.\n- Latest saved plan: 4 days, 24 exercises total.\n- Recovery check-ins: 5 logged (latest 3.0/5, avg 3.60/5).\n- Muscle tracking: 0 muscles with soreness/volume state."
+    },
+    {
+      "ts": 1772516038,
+      "user": "Show my progress",
+      "assistant": "Here\u2019s your tracked progress so far:\n- Profile saved: goal='weight loss and muscle gain', days/week=5, injuries=chest.\n- Latest saved plan: 5 days, 24 exercises total.\n- Recovery check-ins: 5 logged (latest 3.0/5, avg 3.60/5).\n- Muscle tracking: 0 muscles with soreness/volume state."
+    },
+    {
+      "ts": 1772517725,
+      "user": "hi",
+      "assistant": "Based on your profile, exercise DB, and KRR rules: Hello! How can I assist you with your workout plan today? If you have any questions about your current plan or need adjustments, feel free to ask!"
     }
   ],
   "onboarding_complete": true,
   "fitness_goals": "weight loss and muscle gain",
-  "days_per_week": 4
+  "days_per_week": 5
 }

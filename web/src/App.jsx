@@ -10,15 +10,19 @@ const MUSCLE_OPTIONS = [
   'legs', 'quads', 'hamstrings', 'glutes', 'calves', 'abs', 'forearms', 'adductors', 'abductors',
 ]
 
+const INJURY_INPUT_OPTIONS = [
+  ...MUSCLE_OPTIONS,
+  'knee', 'hip', 'ankle', 'shoulder', 'elbow', 'wrist', 'wrists',
+  'neck', 'lower back', 'upper back', 'lower_back', 'upper_back',
+  'hamstring', 'abdominal', 'heart', 'lungs',
+]
+
 const DEFAULT_PROFILE = {
   injury_muscles: [],
   intensity: 3,
-  feedback_history: [],
   onboarding_complete: false,
   fitness_goals: '',
   days_per_week: 5,
-  soreness_per_muscle: {},
-  weekly_volume_per_muscle: {},
 }
 
 const ONBOARDING_STEPS = ['Goals', 'Days / Week', 'Injuries', 'Intensity']
@@ -74,13 +78,6 @@ function parseSymbolicSummary(reasoningText) {
   }
 }
 
-function sorenessClass(value) {
-  if (value >= 4) return 'heat-high'
-  if (value >= 3) return 'heat-mid'
-  if (value >= 2) return 'heat-low'
-  return 'heat-none'
-}
-
 function makeAthleteId(name) {
   const base = String(name || 'athlete')
     .toLowerCase()
@@ -122,6 +119,13 @@ export default function App() {
   const [renameAthleteName, setRenameAthleteName] = useState('')
   const [athleteMenuOpen, setAthleteMenuOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [profileUpdateModal, setProfileUpdateModal] = useState({
+    open: false,
+    messageId: null,
+    updates: null,
+    summary: [],
+    prompt: '',
+  })
   const [userId, setUserId] = useState('')
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
   const [profileEdit, setProfileEdit] = useState(false)
@@ -143,9 +147,6 @@ export default function App() {
   const [planHistory, setPlanHistory] = useState([])
   const [lastRequestId, setLastRequestId] = useState(null)
 
-  const [showAnalytics, setShowAnalytics] = useState(false)
-  const [feedbackSoreness, setFeedbackSoreness] = useState(3)
-
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [drawerDay, setDrawerDay] = useState(null)
@@ -163,6 +164,12 @@ export default function App() {
     days: 5,
     injuries: [],
     intensity: 3,
+  })
+  const [safetyPreview, setSafetyPreview] = useState({
+    loading: false,
+    error: '',
+    requested: [],
+    forbidden: [],
   })
 
   const chatEndRef = useRef(null)
@@ -303,8 +310,6 @@ export default function App() {
         const next = {
           ...DEFAULT_PROFILE,
           ...p,
-          soreness_per_muscle: p.soreness_per_muscle || {},
-          weekly_volume_per_muscle: p.weekly_volume_per_muscle || {},
         }
         setProfile(next)
         setOnboardingDraft({
@@ -381,22 +386,22 @@ export default function App() {
     pushToast('success', `Deleted ${target?.name || 'athlete'} and switched profile.`)
   }
 
-  const stateRows = useMemo(() => {
-    const soreness = profile.soreness_per_muscle || {}
-    const volume = profile.weekly_volume_per_muscle || {}
-    const muscles = Array.from(new Set([...Object.keys(soreness), ...Object.keys(volume)])).sort()
-    const cap = Math.max(12, Math.min(28, Math.round(4 * (profile.intensity ?? 3) + 8)))
-    return {
-      cap,
-      rows: muscles.map((muscle) => ({
-        muscle,
-        soreness: Number(soreness[muscle] ?? 0),
-        volume: Number(volume[muscle] ?? 0),
-      })),
-    }
-  }, [profile])
-
   const dayLabels = useMemo(() => sortedDayLabelsFromPlan(activePlan?.plan || {}), [activePlan])
+
+  const injuryImpact = useMemo(() => {
+    const injuries = Array.from(new Set((profile.injury_muscles || [])
+      .map((m) => String(m || '').trim().toLowerCase())
+      .filter(Boolean)))
+    const blocked = Array.from(new Set((safetyPreview.forbidden || [])
+      .map((m) => String(m || '').trim().toLowerCase())
+      .filter(Boolean)))
+    const restDays = Object.values(activePlan?.plan || {}).filter((dayExercises) => (dayExercises || []).length === 0).length
+    return {
+      injuries,
+      blocked,
+      restDays,
+    }
+  }, [profile.injury_muscles, safetyPreview.forbidden, activePlan])
 
   useEffect(() => {
     if (!selectedDay && dayLabels.length) setSelectedDay(dayLabels[0])
@@ -432,33 +437,89 @@ export default function App() {
     }
   }, [activePlan, selectedDay, selectedDayExercises])
 
-  const topSorenessSignals = useMemo(() => {
-    return Object.entries(profile.soreness_per_muscle || {})
-      .map(([muscle, score]) => ({ muscle, score: Number(score || 0) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 2)
-  }, [profile.soreness_per_muscle])
+  const quickStartSuggestions = useMemo(() => {
+    const injuries = (profile.injury_muscles || []).filter(Boolean)
+    const athleteName = activeAthlete?.name || 'my athlete'
 
-  const projectedStateRows = useMemo(() => {
-    if (stateRows.rows.length > 0 || !activePlan?.plan) return []
-    const totals = {}
-    Object.values(activePlan.plan || {}).forEach((dayExercises) => {
-      ;(dayExercises || []).forEach((ex) => {
-        const target = String(ex.target || '').trim().toLowerCase()
-        if (!target) return
-        totals[target] = (totals[target] || 0) + Number(ex.sets || 0)
+    if (!profile.onboarding_complete) {
+      return [
+        { key: 'setup', label: 'Finish profile setup', action: 'setup_profile' },
+        { key: 'build3', label: 'Build a 3-day split', action: 'chat', prompt: 'Plan a 3-day split' },
+        { key: 'progress', label: 'Review training progress', action: 'chat', prompt: 'Show my progress' },
+      ]
+    }
+
+    if (!activePlan) {
+      return [
+        {
+          key: 'week-plan',
+          label: `Generate ${profile.days_per_week || 5}-day plan`,
+          action: 'generate_profile_days',
+        },
+        injuries.length > 0
+          ? {
+              key: 'safe-plan',
+              label: `Plan around ${injuries.slice(0, 2).join(', ')} injury`,
+              action: 'chat',
+              prompt: `Generate my plan around these injuries: ${injuries.join(', ')}`,
+            }
+          : {
+              key: 'build3',
+              label: 'Build a 3-day split',
+              action: 'chat',
+              prompt: 'Plan a 3-day split',
+            },
+        { key: 'athlete-progress', label: `Review ${athleteName} progress`, action: 'chat', prompt: 'Show my progress' },
+      ]
+    }
+
+    return [
+      { key: 'regen-day', label: selectedDay ? `Regenerate ${formatDayLabel(selectedDay)}` : 'Regenerate selected day', action: 'regen_selected_day' },
+      { key: 'explain-day', label: selectedDay ? `Explain ${formatDayLabel(selectedDay)}` : 'Explain selected day', action: 'explain_selected_day' },
+      { key: 'progress', label: `Review ${athleteName} progress`, action: 'chat', prompt: 'Show my progress' },
+    ]
+  }, [profile, activeAthlete, activePlan, selectedDay])
+
+  const previewInjuries = useMemo(() => {
+    const source = profileEdit ? onboardingDraft.injuries : profile.injury_muscles
+    return Array.from(new Set((source || [])
+      .map((m) => String(m || '').trim().toLowerCase())
+      .filter(Boolean)))
+  }, [profileEdit, onboardingDraft.injuries, profile.injury_muscles])
+
+  const refreshSafetyPreview = async (injuryInputs) => {
+    const requested = Array.from(new Set((injuryInputs || [])
+      .map((m) => String(m || '').trim().toLowerCase())
+      .filter(Boolean)))
+
+    if (requested.length === 0) {
+      setSafetyPreview({ loading: false, error: '', requested: [], forbidden: [] })
+      return
+    }
+
+    setSafetyPreview((prev) => ({ ...prev, loading: true, error: '', requested }))
+    try {
+      const res = await fetch(`${API}/injury/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ injury_muscles: requested }),
       })
-    })
-    return Object.entries(totals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([muscle, volume]) => ({
-        muscle,
-        soreness: 0,
-        volume: Number(volume),
-      }))
-  }, [activePlan, stateRows.rows.length])
+      if (!res.ok) throw new Error('Unable to resolve injury mapping')
+      const data = await res.json()
+      setSafetyPreview({
+        loading: false,
+        error: '',
+        requested,
+        forbidden: Array.isArray(data?.forbidden_muscles) ? data.forbidden_muscles : [],
+      })
+    } catch {
+      setSafetyPreview((prev) => ({ ...prev, loading: false, error: 'Preview unavailable right now.' }))
+    }
+  }
+
+  useEffect(() => {
+    refreshSafetyPreview(previewInjuries)
+  }, [previewInjuries])
 
   const saveProfile = async (updates) => {
     const id = (userId || '').trim()
@@ -493,16 +554,57 @@ export default function App() {
   const inferProfileUpdatesFromMessage = (message) => {
     const text = String(message || '').toLowerCase()
     const updates = {}
+    const normalizeToken = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ')
 
     const injurySignals = /\b(injured|injury|hurt|pain|strained|strain|pulled|tear|tore|sore)\b/.test(text)
-    const recoverySignals = /\b(recovered|healed|no injuries|not injured|fully recovered)\b/.test(text)
-    if (recoverySignals) {
+    const fullRecoverySignals = /\b(no injuries|not injured|fully recovered|completely recovered)\b/.test(text)
+    const recoverySignals = /\b(recovered|healed)\b/.test(text)
+    if (fullRecoverySignals) {
       updates.injury_muscles = []
-    } else if (injurySignals) {
-      const mentioned = MUSCLE_OPTIONS.filter((muscle) => {
+    } else if (recoverySignals) {
+      const healedMentions = INJURY_INPUT_OPTIONS.filter((muscle) => {
         const expr = new RegExp(`\\b${escapeRegex(muscle.toLowerCase())}\\b`)
         return expr.test(text)
       })
+
+      const recoveryPatterns = [
+        /(?:healed|recovered)\s+(?:my\s+)?([a-z_ ]{3,30})/g,
+        /([a-z_ ]{3,30})\s+(?:is\s+)?(?:healed|recovered)/g,
+      ]
+      for (const pattern of recoveryPatterns) {
+        let m = pattern.exec(text)
+        while (m) {
+          const token = normalizeToken(m[1])
+          if (token) healedMentions.push(token)
+          m = pattern.exec(text)
+        }
+      }
+
+      if (healedMentions.length) {
+        const healedSet = new Set(healedMentions.map(normalizeToken))
+        const currentInjuries = profile.injury_muscles || []
+        updates.injury_muscles = currentInjuries.filter((entry) => !healedSet.has(normalizeToken(entry)))
+      }
+    } else if (injurySignals) {
+      const mentioned = INJURY_INPUT_OPTIONS.filter((muscle) => {
+        const expr = new RegExp(`\\b${escapeRegex(muscle.toLowerCase())}\\b`)
+        return expr.test(text)
+      })
+
+      // Extra capture for patterns like "injured my knee" / "pain in lower back"
+      const phrasePatterns = [
+        /injur(?:ed|y)?\s+(?:my\s+)?([a-z_ ]{3,30})/g,
+        /pain\s+(?:in|on)\s+(?:my\s+)?([a-z_ ]{3,30})/g,
+      ]
+      for (const pattern of phrasePatterns) {
+        let m = pattern.exec(text)
+        while (m) {
+          const token = String(m[1] || '').trim().replace(/\s+/g, ' ')
+          if (token) mentioned.push(token)
+          m = pattern.exec(text)
+        }
+      }
+
       if (mentioned.length) {
         updates.injury_muscles = Array.from(new Set([...(profile.injury_muscles || []), ...mentioned]))
       }
@@ -527,7 +629,7 @@ export default function App() {
     return updates
   }
 
-  const applyDetectedProfileUpdate = async (messageIndex, updates) => {
+  const applyDetectedProfileUpdate = async (messageId, updates) => {
     if (!updates || Object.keys(updates).length === 0) return
     await saveProfile(updates)
     setOnboardingDraft((prev) => ({
@@ -537,8 +639,8 @@ export default function App() {
       injuries: updates.injury_muscles ?? prev.injuries,
       intensity: updates.intensity ?? prev.intensity,
     }))
-    setChatMessages((prev) => prev.map((m, idx) => (
-      idx === messageIndex
+    setChatMessages((prev) => prev.map((m) => (
+      m.id === messageId
         ? { ...m, pendingProfileStatus: 'applied' }
         : m
     )))
@@ -546,13 +648,39 @@ export default function App() {
     pushToast('success', 'Profile card updated from confirmed changes.')
   }
 
-  const discardDetectedProfileUpdate = (messageIndex) => {
-    setChatMessages((prev) => prev.map((m, idx) => (
-      idx === messageIndex
+  const discardDetectedProfileUpdate = (messageId) => {
+    setChatMessages((prev) => prev.map((m) => (
+      m.id === messageId
         ? { ...m, pendingProfileStatus: 'discarded' }
         : m
     )))
     appendSystem('Detected profile update discarded.')
+  }
+
+  const closeProfileUpdateModal = () => {
+    setProfileUpdateModal({
+      open: false,
+      messageId: null,
+      updates: null,
+      summary: [],
+      prompt: '',
+    })
+  }
+
+  const confirmProfileUpdateFromModal = async () => {
+    if (!profileUpdateModal.messageId || !profileUpdateModal.updates) {
+      closeProfileUpdateModal()
+      return
+    }
+    await applyDetectedProfileUpdate(profileUpdateModal.messageId, profileUpdateModal.updates)
+    closeProfileUpdateModal()
+  }
+
+  const discardProfileUpdateFromModal = () => {
+    if (profileUpdateModal.messageId) {
+      discardDetectedProfileUpdate(profileUpdateModal.messageId)
+    }
+    closeProfileUpdateModal()
   }
 
   const appendSystem = (text) => setChatMessages((prev) => [...prev, { role: 'system', text }])
@@ -670,13 +798,23 @@ export default function App() {
         const inferred = inferProfileUpdatesFromMessage(msg)
         if (Object.keys(inferred).length > 0) {
           const detectedSummary = summarizeProfileUpdates(inferred)
+          const pendingId = `pending-update-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          const promptText = intent.assistant_reply || 'Detected profile updates. Review and confirm in the modal.'
           setChatMessages((prev) => [...prev, {
+            id: pendingId,
             role: 'system',
-            text: intent.assistant_reply || 'Detected profile updates. Confirm before saving.',
+            text: promptText,
             pendingProfileUpdate: inferred,
             pendingProfileSummary: detectedSummary,
             pendingProfileStatus: 'pending',
           }])
+          setProfileUpdateModal({
+            open: true,
+            messageId: pendingId,
+            updates: inferred,
+            summary: detectedSummary,
+            prompt: promptText,
+          })
         } else {
           appendSystem(intent.assistant_reply || 'Profile update detected. Use Edit in the left panel to apply exact fields.')
         }
@@ -707,23 +845,6 @@ export default function App() {
       appendSystem(`Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
-    }
-  }
-
-  const submitFeedback = async () => {
-    const id = (userId || '').trim()
-    if (!id) return
-    const res = await fetch(`${API}/feedback`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: id, soreness: feedbackSoreness }),
-    })
-    if (res.ok) {
-      setProfile((prev) => ({
-        ...prev,
-        feedback_history: [...(prev.feedback_history || []), { soreness: feedbackSoreness }].slice(-20),
-      }))
-      appendSystem('Feedback saved. Next plan cycle will adapt soreness policy.')
     }
   }
 
@@ -872,6 +993,38 @@ export default function App() {
     appendSystem('Onboarding complete. You can now generate a validated plan.')
   }
 
+  const handleQuickSuggestion = async (item) => {
+    if (!item) return
+    if (item.action === 'setup_profile') {
+      setProfileEdit(true)
+      appendSystem('Profile editor opened. Complete setup to personalize suggestions.')
+      return
+    }
+    if (item.action === 'generate_profile_days') {
+      await generatePlan(profile.days_per_week || null, 'quick')
+      return
+    }
+    if (item.action === 'regen_selected_day') {
+      if (!activePlan || !selectedDay) {
+        appendSystem('Generate a plan first, then select a day to regenerate.')
+        return
+      }
+      await regenerateDay()
+      return
+    }
+    if (item.action === 'explain_selected_day') {
+      if (!activePlan || !selectedDay) {
+        appendSystem('Generate a plan first, then select a day to explain.')
+        return
+      }
+      await openExplanationDrawer(selectedDay)
+      return
+    }
+    if (item.action === 'chat' && item.prompt) {
+      await sendChat(item.prompt)
+    }
+  }
+
   return (
     <div className="control-center">
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
@@ -939,7 +1092,6 @@ export default function App() {
           </div>
           <p className="section-hint">Switch or manage the active athlete profile.</p>
           <p className="profile-active-name">🧍 {activeAthlete?.name || 'No athlete selected'}</p>
-          {DEV_MODE && <p className="muted small">ID: {activeAthlete?.id || '-'}</p>}
           {renameAthleteOpen && (
             <div className="new-athlete-row">
               <input
@@ -956,141 +1108,27 @@ export default function App() {
         <section className="panel-section">
           <div className="section-head">
             <h3>Profile Card</h3>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setProfileEdit((v) => !v)}>
-              {profileEdit ? 'Done' : 'Edit'}
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setProfileEdit(true)}>
+              Edit
             </button>
           </div>
           <p className="section-hint">These values drive plan generation and safety filters.</p>
 
-          {!profileEdit ? (
-            <div className="profile-grid">
-              <p><span className="profile-icon">🎯</span><strong> Goals:</strong> {profile.fitness_goals || 'Not set'}</p>
-              <p><span className="profile-icon">📅</span><strong> Days/week:</strong> {profile.days_per_week}</p>
-              <p><span className="profile-icon">🔥</span><strong> Intensity:</strong> {profile.intensity}</p>
-              <div className="mini-meter">
-                <div className="mini-meter-fill" style={{ width: `${Math.min(100, ((Number(profile.intensity) || 1) / 5) * 100)}%` }} />
-              </div>
-              <p><span className="profile-icon">🛡️</span><strong> Injuries:</strong> {(profile.injury_muscles || []).join(', ') || 'None'}</p>
+          <div className="profile-grid">
+            <p><span className="profile-icon">🎯</span><strong> Goals:</strong> {profile.fitness_goals || 'Not set'}</p>
+            <p><span className="profile-icon">📅</span><strong> Days/week:</strong> {profile.days_per_week}</p>
+            <p><span className="profile-icon">🔥</span><strong> Intensity:</strong> {profile.intensity}</p>
+            <div className="mini-meter">
+              <div className="mini-meter-fill" style={{ width: `${Math.min(100, ((Number(profile.intensity) || 1) / 5) * 100)}%` }} />
             </div>
-          ) : (
-            <div className="wizard-grid">
-              <p className="wizard-label">Complete setup to generate reliable plans</p>
-              <div className="wizard-steps">
-                {ONBOARDING_STEPS.map((step, idx) => (
-                  <div key={step} className="wizard-step">
-                    <span className="wizard-dot">{idx + 1}</span> {step}
-                  </div>
-                ))}
-              </div>
+            <p><span className="profile-icon">🛡️</span><strong> Injuries:</strong> {(profile.injury_muscles || []).join(', ') || 'None'}</p>
+          </div>
 
-              <label>Goals</label>
-              <input
-                value={onboardingDraft.goals}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, goals: e.target.value }))}
-                placeholder="e.g. build strength and reduce injury risk"
-              />
-
-              <label>Days / Week</label>
-              <select
-                value={onboardingDraft.days}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, days: Number(e.target.value) }))}
-              >
-                {[2, 3, 4, 5, 6, 7].map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-
-              <label>Intensity ({onboardingDraft.intensity})</label>
-              <input
-                type="range"
-                min={1}
-                max={5}
-                step={0.5}
-                value={onboardingDraft.intensity}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: Number(e.target.value) }))}
-              />
-
-              <label>Injury muscles</label>
-              <div className="chips">
-                {MUSCLE_OPTIONS.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    className={`chip ${onboardingDraft.injuries.includes(m) ? 'chip-active' : ''}`}
-                    onClick={() => toggleInjuryDraft(m)}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-
-              <button type="button" className="btn btn-primary" onClick={completeOnboarding}>Save profile</button>
-            </div>
-          )}
         </section>
 
         <section className="panel-section">
-          <h3>Current Training State</h3>
-          <p className="section-hint">Live or projected load by muscle group.</p>
-          {stateRows.rows.length === 0 && projectedStateRows.length === 0 ? (
-            <p className="muted">No tracked muscle state yet. Generate a plan and submit feedback.</p>
-          ) : (
-            <div className="state-list">
-              {stateRows.rows.length === 0 && projectedStateRows.length > 0 && (
-                <p className="muted small">Projected muscle load from current plan</p>
-              )}
-              {(stateRows.rows.length ? stateRows.rows : projectedStateRows).map((row) => (
-                <div key={row.muscle} className="state-row">
-                  <div className="state-row-top">
-                    <span>{row.muscle}</span>
-                    <span className={`heat-pill ${sorenessClass(row.soreness)}`}>soreness {row.soreness || 0}</span>
-                  </div>
-                  <div className="volume-track">
-                    <div className="volume-fill" style={{ width: `${Math.min(100, (row.volume / stateRows.cap) * 100)}%` }} />
-                  </div>
-                  <span className="muted small">{row.volume} / {stateRows.cap}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel-section">
-          <h3>Feedback & Analytics</h3>
-          <p className="section-hint">Log soreness to adapt next week automatically.</p>
-          <div className="row gap">
-            <input
-              type="range"
-              min={1}
-              max={5}
-              step={1}
-              value={feedbackSoreness}
-              onChange={(e) => setFeedbackSoreness(Number(e.target.value))}
-            />
-            <span>{feedbackSoreness}</span>
-          </div>
-          <div className="slider-labels">
-            <span>None</span>
-            <span>Very Sore</span>
-          </div>
-          <div className="row gap">
-            <button type="button" className="btn btn-primary btn-sm" onClick={submitFeedback}>Submit soreness</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAnalytics((v) => !v)}>
-              {showAnalytics ? 'Hide analytics' : 'View analytics'}
-            </button>
-          </div>
-
-          {showAnalytics && (
-            <div className="analytics-box">
-              <p className="muted small">Weekly volume distribution</p>
-              {(stateRows.rows || []).slice(0, 8).map((r) => (
-                <div key={r.muscle} className="analytic-bar-row">
-                  <span>{r.muscle}</span>
-                  <div className="analytic-bar"><div style={{ width: `${Math.min(100, (r.volume / stateRows.cap) * 100)}%` }} /></div>
-                </div>
-              ))}
-              <p className="muted small">Soreness trend: {(profile.feedback_history || []).slice(-5).map((x) => x.soreness).join(' → ') || 'No data'}</p>
-              <p className="muted small">Muscle distribution pie (text): {(stateRows.rows || []).map((r) => `${r.muscle}:${r.volume}`).join(' | ') || 'No data'}</p>
-            </div>
-          )}
+          <h3>Plan History</h3>
+          <p className="section-hint">Manage saved weekly plans.</p>
 
           <label className="toggle-row">
             <input type="checkbox" checked={savePreviousWeeks} onChange={(e) => setSavePreviousWeeks(e.target.checked)} />
@@ -1166,7 +1204,11 @@ export default function App() {
 
           <div className="status-strip">
             <span className="pulse-dot" />
-            <span>Ready • Generate a plan or ask for changes</span>
+            <span>
+              {injuryImpact.injuries.length
+                ? `Injury filter active (${injuryImpact.injuries.join(', ')}) • plan auto-adjusts to avoid unsafe muscles`
+                : 'Ready • Generate a plan or ask for changes'}
+            </span>
           </div>
 
         {newAthleteOpen && (
@@ -1186,15 +1228,11 @@ export default function App() {
             <div className="quick-start">
               <p className="muted">Start with one of these:</p>
               <div className="quick-chips">
-                <button type="button" className="quick-chip" onClick={() => sendChat('Plan a 3-day split')}>
-                  Build a 3-day split
-                </button>
-                <button type="button" className="quick-chip" onClick={() => sendChat('Show my progress')}>
-                  Review training progress
-                </button>
-                <button type="button" className="quick-chip" onClick={() => sendChat('Generate my plan for this week')}>
-                  Generate this week’s plan
-                </button>
+                {quickStartSuggestions.map((item) => (
+                  <button key={item.key} type="button" className="quick-chip" onClick={() => handleQuickSuggestion(item)}>
+                    {item.label}
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -1206,41 +1244,14 @@ export default function App() {
               {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
               {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
 
-              {m.pendingProfileUpdate && (
-                <div className="detected-update-box">
-                  <p className="detected-update-label">Detected update</p>
-                  <div className="detected-update-chips">
-                    {(m.pendingProfileSummary || []).map((item) => (
-                      <span key={item} className="detected-update-chip">{item}</span>
-                    ))}
-                  </div>
-
-                  {m.pendingProfileStatus === 'pending' && (
-                    <div className="detected-update-actions">
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={() => applyDetectedProfileUpdate(idx, m.pendingProfileUpdate)}
-                      >
-                        Confirm
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => discardDetectedProfileUpdate(idx)}
-                      >
-                        Discard
-                      </button>
-                    </div>
-                  )}
-
-                  {m.pendingProfileStatus === 'applied' && (
-                    <p className="detected-update-state success">Saved to profile card.</p>
-                  )}
-                  {m.pendingProfileStatus === 'discarded' && (
-                    <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
-                  )}
-                </div>
+              {m.pendingProfileUpdate && m.pendingProfileStatus === 'pending' && (
+                <p className="detected-update-state muted">Pending profile update — review in modal.</p>
+              )}
+              {m.pendingProfileUpdate && m.pendingProfileStatus === 'applied' && (
+                <p className="detected-update-state success">Saved to profile card.</p>
+              )}
+              {m.pendingProfileUpdate && m.pendingProfileStatus === 'discarded' && (
+                <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
               )}
 
               {m.plan && (
@@ -1262,7 +1273,9 @@ export default function App() {
                             <span className="summary-day-theme">{m.day_themes?.[d] || d}</span>
                           </p>
                           <ul className="summary-ex-list">
-                            {(m.plan[d] || []).length === 0 && <li className="summary-ex-item muted">Rest Day</li>}
+                            {(m.plan[d] || []).length === 0 && (
+                              <li className="summary-ex-item muted">Rest Day — no injury-safe exercises matched this day.</li>
+                            )}
                             {(m.plan[d] || []).map((e, exIdx) => (
                               <li key={`${d}-${e.name}-${exIdx}`} className="summary-ex-item">
                                 {toTitleCase(e.name)}
@@ -1316,6 +1329,24 @@ export default function App() {
         <h2 className="panel-title">Weekly Plan View</h2>
         <p className="panel-subtitle">Inspect each day, then explain or regenerate if needed.</p>
 
+        {injuryImpact.injuries.length > 0 && (
+          <div className="injury-impact-card">
+            <p className="injury-impact-title">Injury impact on this plan</p>
+            <p className="muted small">Active injuries: {injuryImpact.injuries.join(', ')}</p>
+            <p className="muted small">
+              Blocked muscles: {injuryImpact.blocked.length ? injuryImpact.blocked.slice(0, 10).join(', ') : 'resolving...'}
+              {injuryImpact.blocked.length > 10 ? ` +${injuryImpact.blocked.length - 10} more` : ''}
+            </p>
+            {activePlan && (
+              <p className="muted small">
+                {injuryImpact.restDays > 0
+                  ? `${injuryImpact.restDays} day(s) set to Rest because no injury-safe exercises matched.`
+                  : 'Plan adjusted to avoid blocked muscles while preserving training days.'}
+              </p>
+            )}
+          </div>
+        )}
+
         {!activePlan ? (
           <div className="empty-plan">
             <div className="empty-plan-graphic" aria-hidden>
@@ -1361,7 +1392,9 @@ export default function App() {
               </div>
 
               <ol className="exercise-list">
-                {selectedDayExercises.length === 0 && <li className="exercise-item muted">Rest Day</li>}
+                {selectedDayExercises.length === 0 && (
+                  <li className="exercise-item muted">Rest Day — recommended because no injury-safe exercises matched today’s theme.</li>
+                )}
                 {selectedDayExercises.map((ex, idx) => (
                   <li key={`${ex.name}-${idx}`} className="exercise-item">
                     <p className="exercise-name">{toTitleCase(ex.name)}</p>
@@ -1446,14 +1479,9 @@ export default function App() {
               </div>
               {explainSectionsOpen.policy && (
                 <div className="reason-content">
-                  <p>✓ Adjusted workload using soreness and weekly volume feedback.</p>
-                  <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
+                  <p>✓ Adjusted workload with profile constraints and injury safety rules.</p>
+                  <p className="muted small">Profile intensity influences set scaling and day-level load.</p>
                   <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
-                  {topSorenessSignals.length > 0 && (
-                    <p className="muted small">
-                      Top soreness signals: {topSorenessSignals.map((s) => `${s.muscle} (${s.score.toFixed(1)})`).join(', ')}
-                    </p>
-                  )}
                 </div>
               )}
             </div>
@@ -1500,12 +1528,110 @@ export default function App() {
         </section>
       )}
 
-      {(drawerOpen || deleteConfirmOpen) && (
+      {profileEdit && (
+        <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title">
+          <div className="confirm-card">
+            <h3 id="edit-profile-title">Edit profile</h3>
+            <div className="wizard-grid">
+              <p className="wizard-label">Update your training preferences and injury filters.</p>
+              <div className="wizard-steps">
+                {ONBOARDING_STEPS.map((step, idx) => (
+                  <div key={step} className="wizard-step">
+                    <span className="wizard-dot">{idx + 1}</span> {step}
+                  </div>
+                ))}
+              </div>
+
+              <label>Goals</label>
+              <input
+                value={onboardingDraft.goals}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, goals: e.target.value }))}
+                placeholder="e.g. build strength and reduce injury risk"
+              />
+
+              <label>Days / Week</label>
+              <select
+                value={onboardingDraft.days}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, days: Number(e.target.value) }))}
+              >
+                {[2, 3, 4, 5, 6, 7].map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+
+              <label>Intensity ({onboardingDraft.intensity})</label>
+              <input
+                type="range"
+                min={1}
+                max={5}
+                step={0.5}
+                value={onboardingDraft.intensity}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: Number(e.target.value) }))}
+              />
+
+              <label>Injury muscles</label>
+              <div className="chips">
+                {MUSCLE_OPTIONS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={`chip ${onboardingDraft.injuries.includes(m) ? 'chip-active' : ''}`}
+                    onClick={() => toggleInjuryDraft(m)}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+
+              <div className="row gap confirm-actions">
+                <button type="button" className="btn btn-ghost" onClick={() => setProfileEdit(false)}>Cancel</button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    await completeOnboarding()
+                    setProfileEdit(false)
+                  }}
+                >
+                  Save profile
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {profileUpdateModal.open && (
+        <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-update-title">
+          <div className="confirm-card">
+            <h3 id="confirm-update-title">Confirm profile update</h3>
+            <p>{profileUpdateModal.prompt || 'Detected profile updates from your message.'}</p>
+            <div className="detected-update-box">
+              <p className="detected-update-label">Changes to apply</p>
+              <div className="detected-update-chips">
+                {(profileUpdateModal.summary || []).map((item) => (
+                  <span key={item} className="detected-update-chip">{item}</span>
+                ))}
+              </div>
+            </div>
+            <div className="row gap confirm-actions">
+              <button type="button" className="btn btn-ghost" onClick={discardProfileUpdateFromModal}>
+                Discard
+              </button>
+              <button type="button" className="btn btn-primary" onClick={confirmProfileUpdateFromModal}>
+                Confirm & Save
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {(drawerOpen || deleteConfirmOpen || profileUpdateModal.open || profileEdit) && (
         <div
           className="drawer-backdrop"
           onClick={() => {
             if (drawerOpen) setDrawerOpen(false)
             if (deleteConfirmOpen) setDeleteConfirmOpen(false)
+            if (profileUpdateModal.open) closeProfileUpdateModal()
+            if (profileEdit) setProfileEdit(false)
           }}
           aria-hidden
         />

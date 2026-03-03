@@ -205,7 +205,23 @@ def _sanitize_llm_plan(
             for m in (template_day.get("muscles") or [])
             if str(m).strip()
         ]
-        muscles = list(template_muscles)
+        safe_template_muscles = [
+            m for m in template_muscles
+            if m not in forbidden_muscles and by_muscle.get(m)
+        ]
+
+        # If this themed day has no injury-safe muscle left, enforce rest day
+        # instead of substituting exercises from unrelated muscles.
+        if template_muscles and not safe_template_muscles:
+            day_specs.append({
+                "day": day_label,
+                "theme": "Rest",
+                "muscles": [],
+                "exercises": [],
+            })
+            continue
+
+        muscles = list(safe_template_muscles)
 
         ex_raw = raw_day.get("exercises")
         ex_raw = ex_raw if isinstance(ex_raw, list) else []
@@ -229,12 +245,12 @@ def _sanitize_llm_plan(
             if forbidden_muscles and any(t in forbidden_muscles for t in targets):
                 continue
 
-            if template_muscles and not any(t in template_muscles for t in targets):
+            if safe_template_muscles and not any(t in safe_template_muscles for t in targets):
                 continue
 
             target = str(ex.get("target", "")).strip().lower()
             if target not in targets:
-                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
+                target = next((t for t in targets if not safe_template_muscles or t in safe_template_muscles), targets[0])
 
             default_sets = _derive_sets(target, prescription)
             sets = _safe_int(ex.get("sets"), default_sets)
@@ -255,7 +271,7 @@ def _sanitize_llm_plan(
         # If LLM under-selected exercises, fill from evidence to keep a usable day.
         if len(exercises) < 3:
             candidate_pool: list[str] = []
-            source_muscles = template_muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
+            source_muscles = safe_template_muscles or sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
             for m in source_muscles:
                 for name in by_muscle.get(m, []):
                     if name not in candidate_pool:
@@ -268,7 +284,7 @@ def _sanitize_llm_plan(
                     continue
                 if forbidden_muscles and any(t in forbidden_muscles for t in targets):
                     continue
-                target = next((t for t in targets if not template_muscles or t in template_muscles), targets[0])
+                target = next((t for t in targets if not safe_template_muscles or t in safe_template_muscles), targets[0])
                 exercises.append({
                     "name": name,
                     "sets": _derive_sets(target, prescription),
@@ -286,6 +302,10 @@ def _sanitize_llm_plan(
                 if m and m not in inferred:
                     inferred.append(m)
             muscles = inferred[:2]
+
+        if not exercises:
+            theme = "Rest"
+            muscles = []
 
         day_specs.append({
             "day": day_label,
@@ -320,6 +340,17 @@ def _fallback_plan(
             if str(m).strip()
         ]
         theme = str(template_day.get("theme") or day).strip()
+        day_muscles = [m for m in day_muscles if m not in forbidden_muscles and by_muscle.get(m)]
+
+        # If this themed day has no injury-safe muscle left, enforce rest day.
+        if (template_day.get("muscles") or []) and not day_muscles:
+            out.append({
+                "day": day,
+                "theme": "Rest",
+                "muscles": [],
+                "exercises": [],
+            })
+            continue
 
         if not day_muscles:
             primary = muscles[i % len(muscles)]
@@ -347,6 +378,10 @@ def _fallback_plan(
                 "reps": 12,
                 "target": target,
             })
+
+        if not exercises:
+            theme = "Rest"
+            day_muscles = []
 
         out.append({
             "day": day,

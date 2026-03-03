@@ -1,5 +1,5 @@
 """
-FastAPI backend for the Node.js frontend: plan generation, feedback, and chat with the agent.
+FastAPI backend for the Node.js frontend: plan generation and chat with the agent.
 Run from project root: uvicorn api.app:app --reload --port 8000
 """
 
@@ -23,8 +23,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent.agent_state import AgentGoals, AgentState
-from agent.krr import load_kb, query_recommended
+from agent.agent_state import AgentGoals
+from agent.krr import load_kb, normalize_injury_muscles, query_recommended
 from agent.llm import LLM
 from agent.mcp import run_plan_cycle
 from agent.reliability_metrics import get_metrics
@@ -82,12 +82,11 @@ def _profile_store_path(user_id: str) -> str:
 
 
 def load_profile(user_id: str) -> dict:
-    """Load saved profile: onboarding, injuries, intensity, feedback_history."""
+    """Load saved profile: onboarding, injuries, and intensity."""
     path = _profile_store_path(user_id)
     default = {
         "injury_muscles": [],
         "intensity": 3,
-        "feedback_history": [],
         "chat_history": [],
         "onboarding_complete": False,
         "fitness_goals": "",
@@ -102,7 +101,6 @@ def load_profile(user_id: str) -> dict:
         prof = {
             "injury_muscles": data.get("injury_muscles", []),
             "intensity": data.get("intensity", 3),
-            "feedback_history": data.get("feedback_history", []),
             "chat_history": data.get("chat_history", []),
             "onboarding_complete": data.get("onboarding_complete", False),
             "fitness_goals": data.get("fitness_goals", ""),
@@ -153,24 +151,6 @@ def save_profile(
         prof.get("intensity"),
         len(prof.get("injury_muscles", [])),
         bool(prof.get("fitness_goals")),
-    )
-
-
-def append_feedback_to_profile(user_id: str, soreness: float) -> None:
-    """Append feedback to profile history."""
-    prof = load_profile(user_id)
-    hist = prof.get("feedback_history", [])
-    hist.append({"soreness": soreness})
-    prof["feedback_history"] = hist[-20:]  # keep last 20
-    path = _profile_store_path(user_id)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(prof, f, indent=2)
-    logger.info(
-        "profile.feedback.append user_id=%s soreness=%s history_len=%s",
-        user_id,
-        soreness,
-        len(prof.get("feedback_history", [])),
     )
 
 
@@ -255,11 +235,6 @@ class PlanOut(BaseModel):
     suggestions: list[str]
 
 
-class FeedbackIn(BaseModel):
-    user_id: str
-    soreness: float  # 1-5
-
-
 class ChatIn(BaseModel):
     user_id: str
     message: str
@@ -292,7 +267,7 @@ The planner uses a Knowledge Base (KRR) with two rules:
    → The weekly plan is built by picking from recommended exercises for each day (Chest, Back, Legs, Arms, Shoulders).
 
 Facts come from: (a) the exercise DB (name, target muscle, difficulty), (b) your profile (injured muscles).
-The agent also tracks your state (soreness, weekly volume) to adjust sets and prioritize muscles over time.
+The planner adapts sets and intensity using your profile constraints and safety rules.
 """
 
 
@@ -303,6 +278,10 @@ class ProfileUpdateIn(BaseModel):
     onboarding_complete: bool | None = None
     fitness_goals: str | None = None
     days_per_week: int | None = None
+
+
+class InjuryResolveIn(BaseModel):
+    injury_muscles: list[str] = []
 
 
 class DayActionIn(BaseModel):
@@ -479,23 +458,11 @@ def _build_progress_reply(user_id: str, profile: dict) -> str:
     total_days = len(plan)
     total_exercises = sum(len(day or []) for day in plan.values()) if plan else 0
 
-    feedback = profile.get("feedback_history", []) or []
-    soreness_values = [float(item.get("soreness")) for item in feedback if isinstance(item, dict) and item.get("soreness") is not None]
-    latest_soreness = soreness_values[-1] if soreness_values else None
-    avg_soreness = (sum(soreness_values) / len(soreness_values)) if soreness_values else None
-
-    state = AgentState.load(user_id)
-    tracked_muscles = 0
-    if state:
-        tracked_muscles = len(set(list((state.soreness_per_muscle or {}).keys()) + list((state.weekly_volume_per_muscle or {}).keys())))
-
     injuries = profile.get("injury_muscles", []) or []
     lines = [
         "Here’s your tracked progress so far:",
         f"- Profile saved: goal='{(profile.get('fitness_goals') or 'not set')}', days/week={profile.get('days_per_week', DEFAULT_DAYS_PER_WEEK)}, injuries={', '.join(injuries) if injuries else 'none'}.",
         f"- Latest saved plan: {total_days} days, {total_exercises} exercises total." if total_days else "- Latest saved plan: none yet. Ask me to generate a plan and I’ll save it.",
-        f"- Recovery check-ins: {len(soreness_values)} logged" + (f" (latest {latest_soreness:.1f}/5, avg {avg_soreness:.2f}/5)." if latest_soreness is not None and avg_soreness is not None else "."),
-        f"- Muscle tracking: {tracked_muscles} muscles with soreness/volume state.",
     ]
     return "\n".join(lines)
 
@@ -534,23 +501,33 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/api/injury/resolve")
+def resolve_injury_muscles(body: InjuryResolveIn):
+    """Resolve user injury inputs to forbidden muscle groups via injury mapping rules."""
+    requested = [str(m).strip() for m in (body.injury_muscles or []) if str(m).strip()]
+    forbidden = sorted(normalize_injury_muscles(requested))
+    logger.info(
+        "injury.resolve requested=%s forbidden=%s",
+        len(requested),
+        len(forbidden),
+    )
+    return {
+        "requested_injury_inputs": requested,
+        "forbidden_muscles": forbidden,
+        "count": len(forbidden),
+    }
+
+
 @app.get("/api/profile")
 def get_profile(user_id: str = Query(..., description="User ID")):
-    """Return saved profile: injuries, intensity, feedback history. Merged with agent state for soreness."""
+    """Return saved profile: injuries, intensity, goals, and schedule preference."""
     prof = load_profile(user_id)
-    # Also include agent state (soreness, volume) if exists
-    state = AgentState.load(user_id)
-    if state:
-        prof["soreness_per_muscle"] = state.soreness_per_muscle
-        prof["weekly_volume_per_muscle"] = state.weekly_volume_per_muscle
     logger.info(
-        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s feedback=%s has_state=%s",
+        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s",
         user_id,
         prof.get("onboarding_complete"),
         prof.get("days_per_week"),
         len(prof.get("injury_muscles", [])),
-        len(prof.get("feedback_history", [])),
-        state is not None,
     )
     return prof
 
@@ -633,33 +610,16 @@ def detect_intent(body: IntentIn):
 
 @app.get("/api/db")
 def get_db():
-    """Return what's stored: exercises from exercises_db.xlsx and saved user states from data/."""
-    import glob
+    """Return exercise catalog currently used by the planner."""
     exercises = []
     try:
         df = get_exercises_df()
         exercises = df[["name", "target", "difficulty"]].fillna("").astype(str).to_dict("records")
     except Exception:
         pass
-    user_states = []
-    try:
-        for path in glob.glob(os.path.join(DATA_DIR, "agent_state_*.json")):
-            name = os.path.basename(path)
-            user_id = name.replace("agent_state_", "").replace(".json", "")
-            with open(path) as f:
-                data = json.load(f)
-            user_states.append({
-                "user_id": user_id,
-                "soreness_per_muscle": data.get("soreness_per_muscle", {}),
-                "weekly_volume_per_muscle": data.get("weekly_volume_per_muscle", {}),
-                "missed_sessions": data.get("missed_sessions", []),
-            })
-    except Exception:
-        pass
     return {
         "exercises": exercises,
-        "user_states": user_states,
-        "source": "data/exercises_db.xlsx and data/agent_state_*.json",
+        "source": "data/exercises_db.xlsx",
     }
 
 
@@ -866,17 +826,6 @@ def swap_plan_day_exercises(body: DaySwapIn):
     )
 
 
-@app.post("/api/feedback")
-def submit_feedback(body: FeedbackIn):
-    """Submit end-of-week soreness; updates AgentState and appends to profile feedback history."""
-    state = AgentState.get_or_create(body.user_id)
-    state.update_from_feedback(overall_soreness=body.soreness)
-    state.save()
-    append_feedback_to_profile(body.user_id, body.soreness)
-    logger.info("feedback.submit user_id=%s soreness=%s", body.user_id, body.soreness)
-    return {"ok": True}
-
-
 @app.get("/api/explanation")
 def get_explanation(
     day: str = Query(..., description="Day label, e.g. Day1"),
@@ -935,28 +884,16 @@ def chat(body: ChatIn):
         progress_reply = _build_progress_reply(body.user_id, prof)
         append_chat_turn_to_profile(body.user_id, body.message, progress_reply)
         logger.info(
-            "chat.progress user_id=%s message=\"%s\" has_saved_plan=%s checkins=%s",
+            "chat.progress user_id=%s message=\"%s\" has_saved_plan=%s",
             body.user_id,
             _clip(body.message, 120),
             stored is not None,
-            len(prof.get("feedback_history", []) or []),
         )
         return ChatOut(response=progress_reply)
 
     profile_context = None
     if prof.get("onboarding_complete"):
         profile_context = f"User profile: Goals={prof.get('fitness_goals', '')}, Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
-
-    feedback = prof.get("feedback_history", []) or []
-    soreness_values = [float(item.get("soreness")) for item in feedback if isinstance(item, dict) and item.get("soreness") is not None]
-    if soreness_values:
-        avg_soreness = sum(soreness_values) / len(soreness_values)
-        latest_soreness = soreness_values[-1]
-        progress_context = (
-            f"Recovery tracking: {len(soreness_values)} soreness check-ins recorded; "
-            f"latest={latest_soreness:.1f}/5, average={avg_soreness:.2f}/5."
-        )
-        profile_context = (profile_context + "\n" + progress_context) if profile_context else progress_context
 
     kb_context = None
     try:
@@ -981,8 +918,6 @@ def chat(body: ChatIn):
         user_id=body.user_id,
         profile_context=(profile_context + ("\n" + kb_context if kb_context else "")) if profile_context else kb_context,
     )
-    if response and "Based on your" not in response:
-        response = f"Based on your profile, exercise DB, and KRR rules: {response}"
     append_chat_turn_to_profile(body.user_id, body.message, response)
     logger.info(
         "chat.reply user_id=%s message=\"%s\" onboarding=%s plan_summary=%s krr_summary=%s response_chars=%s",

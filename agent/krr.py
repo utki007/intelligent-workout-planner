@@ -8,7 +8,11 @@ by injuries, plus KRR reasoning text for display.
 
 from __future__ import annotations
 
+import ast
+import json
 import os
+import re
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -27,6 +31,9 @@ MUSCLE_ALIASES = {
     "chest": "pectorals",
     "shoulders": "delts",
     "shoulder": "delts",
+    "deltoids": "delts",
+    "trapezius": "traps",
+    "quadriceps": "quads",
     "back": "lats",  # Also matches upper back, traps
     "legs": "quads",  # Also matches hamstrings, glutes, calves
     "arms": "biceps",  # Also matches triceps
@@ -40,30 +47,102 @@ MUSCLE_GROUP_EXPANSIONS = {
 }
 
 
+_INJURY_MAP_PATH = Path(__file__).resolve().parent.parent / "data" / "injury.json"
+
+
+def _normalize_label(value: Any) -> str:
+    s = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", s)
+
+
+def _parse_muscle_values(raw: Any) -> list[str]:
+    """Parse DB muscle fields that may be plain strings or list-like strings."""
+    if raw is None or pd.isna(raw):
+        return []
+
+    values: list[str] = []
+    if isinstance(raw, (list, tuple, set)):
+        values = [str(v) for v in raw]
+    else:
+        s = str(raw).strip()
+        if not s:
+            return []
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, (list, tuple, set)):
+                    values = [str(v) for v in parsed]
+                else:
+                    values = [s]
+            except Exception:
+                values = [s]
+        else:
+            values = [part for part in re.split(r"\s*,\s*", s) if part.strip()]
+
+    out: list[str] = []
+    for item in values:
+        norm = _normalize_label(item).strip("'\"")
+        if norm:
+            out.append(MUSCLE_ALIASES.get(norm, norm))
+    return out
+
+
+def _load_injury_map_entries() -> list[dict[str, Any]]:
+    """Load injury mapping rows from data/injury.json."""
+    if not _INJURY_MAP_PATH.exists():
+        return []
+    try:
+        payload = json.loads(_INJURY_MAP_PATH.read_text())
+    except Exception:
+        return []
+
+    raw_entries = payload.get("muscle_groups", []) if isinstance(payload, dict) else []
+    out: list[dict[str, Any]] = []
+    for row in raw_entries:
+        if not isinstance(row, dict):
+            continue
+        muscle = _normalize_label(row.get("name"))
+        if not muscle:
+            continue
+        avoid_with = {
+            _normalize_label(v)
+            for v in (row.get("avoid_with") or [])
+            if _normalize_label(v)
+        }
+        out.append({"muscle": MUSCLE_ALIASES.get(muscle, muscle), "avoid_with": avoid_with})
+    return out
+
+
 def _normalize_muscles(target: Any) -> list[str]:
     """Normalize target to a list of muscle names (lowercase, stripped)."""
-    if pd.isna(target):
-        return []
-    s = str(target).strip().lower()
-    if not s:
-        return []
-    muscles = [m.strip().lower() for m in s.split(",")]
-    # Map aliases to DB names
-    return [MUSCLE_ALIASES.get(m, m) for m in muscles]
+    return _parse_muscle_values(target)
 
 
 def normalize_injury_muscles(injury_muscles: list[str] | None) -> set[str]:
-    """Expand aliases/groups to a canonical set used by KB and safety filters."""
+    """Expand user injury inputs to forbidden muscles via aliases, groups, and injury.json mapping."""
+    injury_rows = _load_injury_map_entries()
     out: set[str] = set()
+    inputs: set[str] = set()
+
     for raw in injury_muscles or []:
-        norm = str(raw).strip().lower()
+        norm = _normalize_label(raw)
         if not norm:
             continue
+        inputs.add(norm)
         if norm in MUSCLE_GROUP_EXPANSIONS:
             out.update(MUSCLE_GROUP_EXPANSIONS[norm])
-            continue
         mapped = MUSCLE_ALIASES.get(norm, norm)
         out.add(mapped)
+
+    # Use injury map semantics: if user provides a condition in avoid_with
+    # (e.g., knee/shoulder/lower_back), forbid all mapped muscle groups.
+    for token in inputs:
+        for row in injury_rows:
+            muscle = row["muscle"]
+            avoid_with = row["avoid_with"]
+            if token == muscle or token in avoid_with:
+                out.add(muscle)
+
     return out
 
 
@@ -90,7 +169,10 @@ def load_kb(exercises_df: pd.DataFrame, user_id: str, injury_muscles: list[str])
         name = str(row.get("name", "") or "").strip()
         if not name:
             continue
-        muscles = _normalize_muscles(row.get("target", ""))
+        target_muscles = _normalize_muscles(row.get("target", ""))
+        secondary_raw = row.get("secondaryMuscles", row.get("secondarymuscles", ""))
+        secondary_muscles = _normalize_muscles(secondary_raw)
+        muscles = list({m for m in (target_muscles + secondary_muscles) if m})
         difficulty = str(row.get("difficulty", "beginner")).strip().lower()
         +is_exercise(name)
         +has_difficulty(name, difficulty)
@@ -156,7 +238,7 @@ def get_krr_reasoning(
     """
     lines = [
         "Facts:",
-        "  (from exercise DB) is_exercise(E), trains_muscle(E, M), has_difficulty(E, D).",
+        "  (from exercise DB) is_exercise(E), trains_muscle(E, M) from target + secondary muscles, has_difficulty(E, D).",
         "  (from user) injured_muscle(User, M) for user's injury list.",
         "Rules:",
         "  forbidden(User, Exercise) <- trains_muscle(Exercise, M) & injured_muscle(User, M).",
@@ -171,5 +253,10 @@ def get_krr_reasoning(
         if len(recommended_for_day) > 10:
             lines.append(f"    ... and {len(recommended_for_day) - 10} more.")
     else:
-        lines.append("  Result: (none — rest day or no matching beginner exercises after injury filter).")
+        if day_theme_muscles:
+            lines.append(
+                "  Result: (none — recommend Rest Day because no injury-safe beginner exercises matched this day theme)."
+            )
+        else:
+            lines.append("  Result: (none — Rest Day recommended by planner constraints).")
     return "\n".join(lines)
