@@ -1,6 +1,6 @@
 # Agentic Workout Planner
 
-A **Knowledge Representation & Reasoning (KRR)** workout planner with **agentic behavior**. It generates personalized **2–7 day weekly plans** using pyDatalog, respects user injuries, and adapts from end-of-week soreness feedback. Optional **Azure OpenAI** provides natural-language explanations per day and chat responses.
+A **Knowledge Representation & Reasoning (KRR)** workout planner that generates personalized **2–7 day weekly plans** using pyDatalog and respects user injuries. Optional **Azure OpenAI** provides natural-language explanations, intent routing, and chat responses.
 
 ## Requirements
 
@@ -29,6 +29,7 @@ python scripts/create_exercises_xlsx.py
 To connect the LLM for daily explanations, add your Azure OpenAI settings in **one** of these ways:
 
 **Option A – `.env` file (recommended)**  
+
 1. Copy the example: `cp .env.example .env`  
 2. Edit `.env` in the project root and set:
    - `AZURE_OPENAI_KEY` – your API key (Azure Portal → your resource → Keys and Endpoint)
@@ -89,15 +90,15 @@ python api.py
 uvicorn api.app:app --reload --port 8000
 ```
 
-2. In another terminal, install and run the React chat frontend:
+1. In another terminal, install and run the React chat frontend:
 
 ```bash
 python dev.py web --install
 ```
 
-3. Open **http://localhost:5173** in your browser.
-   - Enter a **User ID**.
-   - Answer the **onboarding questions in chat** (goals, days/week, injuries, intensity).
+1. Open **<http://localhost:5173>** in your browser.
+   - The app runs in a **single generic profile** mode (no multi-user picker).
+   - Complete the profile card (goals, days/week, injuries, intensity).
    - Say **"Generate my plan"** or click **Generate plan**.
    - Expand any day card to see exercises and use **See Thinking** to view KRR + LLM reasoning.
    - Use the chat panel to ask follow-up questions (e.g. why a day is rest, how to adjust for injuries).
@@ -106,16 +107,16 @@ python dev.py web --install
 
 For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 
-```
+```text
 ├── .vscode/
 │   └── tasks.json           # VS Code run tasks (backend, frontend, CLI, tests)
 ├── api.py                   # backward-compatible API launcher (delegates to dev.py)
 ├── dev.py                   # unified command hub (setup/api/web/cli/test)
 ├── data/
 │   ├── exercises_db.xlsx    # Exercise DB for all recommendations (name, target, difficulty)
-│   ├── agent_state_*.json   # Per-user state (soreness, volume, missed sessions)
-│   ├── profile_*.json       # Per-user profile (goals, days/week, injuries, intensity, feedback history)
-│   └── plan_*.json          # Last generated plan + KRR reasoning per user
+│   ├── profile_default.json # Single generic profile persisted by API/web
+│   ├── plan_default.json    # Latest generated plan + KRR reasoning for API/web
+│   └── agent_state_*.json   # Optional CLI state artifacts (legacy/CLI flow)
 ├── agent/
 │   ├── agent_state.py       # AgentState, AgentGoals, persistence
 │   ├── decision_policy.py   # DecisionPolicy, PlanEvaluation
@@ -125,7 +126,7 @@ For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 ├── planner/
 │   └── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (2–7 days)
 ├── api/
-│   └── app.py               # FastAPI: /api/plan, /api/profile, /api/explanation, /api/feedback, /api/chat
+│   └── app.py               # FastAPI: /api/health, /api/profile, /api/intent, /api/plan, /api/chat, day actions, explanation
 ├── web/                     # Node.js (React + Vite) chat frontend
 │   ├── src/App.jsx
 │   └── package.json
@@ -148,14 +149,16 @@ The planner does **not** use hardcoded split presets. Instead, it:
 
 Only **beginner** exercises are recommended; any exercise that trains a muscle in the user’s **injury list** is **forbidden** (KRR).
 
-## Agentic Loop
+For the **API/web path**, planning is currently **stateless** (no soreness/volume adaptation from persisted training state).
+
+## Agentic Loop (CLI path)
 
 1. **Memory** — AgentState (soreness per muscle, weekly volume, missed sessions).
 2. **Goals** — AgentGoals (target soreness range 1–3, max sets per muscle per week).
 3. **Decision** — DecisionPolicy adjusts sets/volume and prioritizes muscles.
 4. **Plan** — Weekly planner uses KRR evidence + LLM synthesis + policy checks → **N days (2–7)**, up to 6 exercises per day.
 5. **Evaluate** — PlanEvaluation flags overtraining and suggests modifications.
-6. **Feedback** — User reports soreness → state updated → next week adapts.
+6. **Feedback** — User reports soreness → state updated → next week adapts (CLI flow).
 
 ## KRR (Knowledge Base)
 
