@@ -1239,9 +1239,6 @@ export default function App() {
                 {newAthleteOpen ? 'Cancel' : '➕ New Athlete'}
               </button>
             </div>
-              <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
-              ⚡ Generate Plan
-            </button>
           </div>
         </div>
 
@@ -1270,7 +1267,7 @@ export default function App() {
               {(() => {
                 const text = String(m.text || '')
                 const lineBreaks = (text.match(/\n/g) || []).length
-                const isLongAssistantReply = m.role === 'assistant' && (text.length > 520 || lineBreaks > 8)
+                const isLongAssistantReply = m.role === 'assistant' && (text.length > 900 || lineBreaks > 14)
                 const isExpanded = Boolean(expandedMsg[idx])
                 return (
                   <>
@@ -1382,10 +1379,7 @@ export default function App() {
               <span />
             </div>
             <p className="empty-plan-title">No plan generated yet</p>
-            <p className="muted">Generate a plan to populate the weekly schedule.</p>
-            <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
-              ⚡ Generate Plan
-            </button>
+            <p className="muted">Ask in chat: “Give me my plan” to populate the weekly schedule.</p>
           </div>
         ) : (
           <>
