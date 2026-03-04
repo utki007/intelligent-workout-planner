@@ -175,7 +175,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=200,
+                max_tokens=320,
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
@@ -239,7 +239,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.4,
-                max_tokens=300,
+                max_tokens=700,
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):

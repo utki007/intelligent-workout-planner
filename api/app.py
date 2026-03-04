@@ -12,6 +12,7 @@ import re
 import sys
 import time
 import uuid
+from datetime import date
 from typing import Literal
 
 import pandas as pd
@@ -248,6 +249,7 @@ class ChatIn(BaseModel):
     message: str
     plan_summary: str | None = None
     krr_summary: str | None = None
+    selected_day: str | None = None
 
 
 class ChatOut(BaseModel):
@@ -675,6 +677,127 @@ def _is_progress_query(message: str) -> bool:
             "summary",
         ]
     )
+
+
+def _sorted_day_keys(plan: dict) -> list[str]:
+    if not isinstance(plan, dict):
+        return []
+    return sorted(
+        plan.keys(),
+        key=lambda d: int(re.search(r"\d+", str(d)).group(0)) if re.search(r"\d+", str(d)) else 999,
+    )
+
+
+def _normalize_day_label(label: str | None) -> str:
+    text = str(label or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"\s+", "", text)
+
+
+def _is_schedule_query(message: str) -> bool:
+    text = (message or "").lower()
+    if not text:
+        return False
+    schedule_signals = [
+        "what am i doing",
+        "what's my workout",
+        "whats my workout",
+        "today",
+        "yesterday",
+        "tomorrow",
+        "weekend",
+        "saturday",
+        "sunday",
+        "next workout",
+        "next session",
+        "today's plan",
+        "todays plan",
+        "today workout",
+        "my plan for",
+        "which exercises",
+    ]
+    return any(token in text for token in schedule_signals)
+
+
+def _resolve_day_for_schedule_query(plan: dict, message: str, selected_day: str | None = None) -> str | None:
+    day_keys = _sorted_day_keys(plan)
+    if not day_keys:
+        return None
+
+    normalized_map = {_normalize_day_label(k): k for k in day_keys}
+    selected = normalized_map.get(_normalize_day_label(selected_day))
+
+    msg = message or ""
+    m = re.search(r"\bday\s*(\d{1,2})\b", msg, flags=re.IGNORECASE)
+    if m:
+        requested = f"Day{int(m.group(1))}"
+        if requested in plan:
+            return requested
+
+    lowered = msg.lower()
+    if "next workout" in lowered or "next session" in lowered:
+        if selected and selected in day_keys:
+            curr_idx = day_keys.index(selected)
+            return day_keys[(curr_idx + 1) % len(day_keys)]
+        idx = date.today().weekday() % len(day_keys)
+        return day_keys[(idx + 1) % len(day_keys)]
+
+    if "tomorrow" in lowered:
+        if selected and selected in day_keys:
+            curr_idx = day_keys.index(selected)
+            return day_keys[(curr_idx + 1) % len(day_keys)]
+        idx = (date.today().weekday() + 1) % len(day_keys)
+        return day_keys[idx]
+
+    if "yesterday" in lowered:
+        if selected and selected in day_keys:
+            curr_idx = day_keys.index(selected)
+            return day_keys[(curr_idx - 1) % len(day_keys)]
+        idx = (date.today().weekday() - 1) % len(day_keys)
+        return day_keys[idx]
+
+    day_number_to_key: dict[int, str] = {}
+    for key in day_keys:
+        match = re.search(r"\d+", key)
+        if match:
+            day_number_to_key[int(match.group(0))] = key
+
+    if "sunday" in lowered:
+        return day_number_to_key.get(7) or day_number_to_key.get(6) or day_keys[-1]
+
+    if "saturday" in lowered:
+        return day_number_to_key.get(6) or day_number_to_key.get(5) or day_keys[-1]
+
+    if "weekend" in lowered:
+        return day_number_to_key.get(6) or day_number_to_key.get(7) or day_keys[-1]
+
+    if "today" in lowered or "tonight" in lowered:
+        if selected and selected in day_keys:
+            return selected
+        idx = date.today().weekday() % len(day_keys)
+        return day_keys[idx]
+
+    if selected and selected in day_keys:
+        return selected
+
+    return day_keys[0]
+
+
+def _build_day_plan_reply(day_label: str, exercises: list[dict]) -> str:
+    if not exercises:
+        return f"{day_label} is a rest/recovery day in your current saved plan."
+
+    lines = [f"{day_label} in your current saved plan:"]
+    for i, ex in enumerate(exercises, start=1):
+        name = str(ex.get("name", "Exercise")).strip() or "Exercise"
+        sets = ex.get("sets")
+        reps = ex.get("reps")
+        target = str(ex.get("target", "")).strip()
+        prescription = f"{sets} x {reps}" if sets is not None and reps is not None else "as prescribed"
+        suffix = f" ({target})" if target else ""
+        lines.append(f"{i}. {name} — {prescription}{suffix}")
+    return "\n".join(lines)
 
 
 def _build_progress_reply(user_id: str, profile: dict) -> str:
@@ -1179,6 +1302,22 @@ def chat(body: ChatIn):
             stored is not None,
         )
         return ChatOut(response=progress_reply)
+
+    if stored and _is_schedule_query(body.message):
+        saved_plan, _ = stored
+        resolved_day = _resolve_day_for_schedule_query(saved_plan, body.message, body.selected_day)
+        if resolved_day and resolved_day in saved_plan:
+            schedule_reply = _build_day_plan_reply(resolved_day, list(saved_plan.get(resolved_day, []) or []))
+            append_chat_turn_to_profile(body.user_id, body.message, schedule_reply)
+            logger.info(
+                "chat.schedule user_id=%s message=\"%s\" day=%s exercises=%s selected_day=%s",
+                body.user_id,
+                _clip(body.message, 120),
+                resolved_day,
+                len(saved_plan.get(resolved_day, []) or []),
+                body.selected_day,
+            )
+            return ChatOut(response=schedule_reply)
 
     profile_context = None
     if prof.get("onboarding_complete"):

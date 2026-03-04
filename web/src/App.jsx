@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const API = '/api'
 const DEV_MODE = import.meta.env.DEV
@@ -230,6 +232,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const [expandedMsg, setExpandedMsg] = useState({})
   const [collapsedPlanMsg, setCollapsedPlanMsg] = useState({})
 
   const hasConversation = useMemo(
@@ -427,7 +430,6 @@ export default function App() {
     setActiveAthleteId(id)
     setNewAthleteName('')
     setNewAthleteOpen(false)
-    appendSystem(`Created athlete profile: ${name}`)
     pushToast('success', `Switched to ${name}`)
   }
 
@@ -445,7 +447,6 @@ export default function App() {
     setAthletes((prev) => prev.map((a) => (a.id === id ? { ...a, name } : a)))
     setRenameAthleteOpen(false)
     setAthleteMenuOpen(false)
-    appendSystem(`Renamed athlete to: ${name}`)
     pushToast('success', `Renamed to ${name}`)
   }
 
@@ -475,7 +476,6 @@ export default function App() {
     setProfile(DEFAULT_PROFILE)
     setDeleteConfirmOpen(false)
     setAthleteMenuOpen(false)
-    appendSystem(`Deleted athlete profile: ${target?.name || id}`)
     pushToast('success', `Deleted ${target?.name || 'athlete'} and switched profile.`)
   }
 
@@ -578,6 +578,64 @@ export default function App() {
     [injuryMap, normalizedDraftInjuries],
   )
 
+  const statusText = chatLoading
+    ? 'Working on your request…'
+    : 'Ready • Generate a plan or ask for changes'
+
+  const lastUserMessage = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
+      const m = chatMessages[i]
+      if (m?.role === 'user' && m?.text) return String(m.text).toLowerCase()
+    }
+    return ''
+  }, [chatMessages])
+
+  const guidedPrompts = useMemo(() => {
+    const hasPlan = Boolean(activePlan?.plan && Object.keys(activePlan.plan || {}).length)
+    if (!hasPlan) {
+      return [
+        { icon: '⚡', text: 'Generate my plan for this week.' },
+        { icon: '🏗️', text: 'Plan a 3-day split for me.' },
+        { icon: '🩹', text: 'Update my injuries before generating.' },
+        { icon: '🎯', text: 'Set my goals to build strength safely.' },
+      ]
+    }
+
+    const prompts = []
+    const selectedLabel = selectedDay ? formatDayLabel(selectedDay) : 'today'
+
+    if (selectedDay) {
+      prompts.push({ icon: '🔎', text: `Explain ${selectedLabel} for me.` })
+    }
+
+    if (lastUserMessage.includes('today')) {
+      prompts.push({ icon: '➡️', text: 'Tell me about tomorrow.' })
+      prompts.push({ icon: '🛡️', text: `Make ${selectedLabel} lower impact.` })
+      prompts.push({ icon: '♻️', text: `Regenerate ${selectedLabel}.` })
+    } else if (lastUserMessage.includes('tomorrow') || lastUserMessage.includes('next workout')) {
+      prompts.push({ icon: '🗓️', text: 'What am I doing today?' })
+      prompts.push({ icon: '🛠️', text: 'Swap my first two exercises for this day.' })
+      prompts.push({ icon: '📉', text: 'Reduce volume for this day.' })
+    } else if (lastUserMessage.includes('progress') || lastUserMessage.includes('status')) {
+      prompts.push({ icon: '📈', text: 'Show my progress summary.' })
+      prompts.push({ icon: '🧠', text: 'Explain how workload adaptation works.' })
+      prompts.push({ icon: '⚖️', text: 'How can I avoid overtraining this week?' })
+    } else {
+      prompts.push({ icon: '🗓️', text: 'What am I doing today?' })
+      prompts.push({ icon: '➡️', text: 'What is my next workout?' })
+      prompts.push({ icon: '🛡️', text: 'Explain this day with injury safety in mind.' })
+    }
+
+    const deduped = []
+    const seen = new Set()
+    prompts.forEach((p) => {
+      if (!p?.text || seen.has(p.text)) return
+      seen.add(p.text)
+      deduped.push(p)
+    })
+    return deduped.slice(0, 4)
+  }, [activePlan, selectedDay, lastUserMessage])
+
   const saveProfile = async (updates) => {
     const id = (userId || '').trim()
     if (!id) return
@@ -625,7 +683,6 @@ export default function App() {
         ? { ...m, pendingProfileStatus: 'applied' }
         : m
     )))
-    appendSystem('Profile updated and saved.')
     pushToast('success', 'Profile card updated from confirmed changes.')
   }
 
@@ -635,10 +692,8 @@ export default function App() {
         ? { ...m, pendingProfileStatus: 'discarded' }
         : m
     )))
-    appendSystem('Detected profile update discarded.')
+    pushToast('success', 'Detected profile update discarded.')
   }
-
-  const appendSystem = (text) => setChatMessages((prev) => [...prev, { role: 'system', text }])
 
   const runGeneratePlan = async (id, daysOverride = null) => {
     const res = await fetch(`${API}/plan`, {
@@ -695,17 +750,16 @@ export default function App() {
   const generatePlan = async (daysOverride = null, source = 'button') => {
     const id = (userId || '').trim()
     if (!id) {
-      appendSystem('Select or create an athlete profile first.')
+      pushToast('error', 'Select or create an athlete profile first.')
       return
     }
 
     if (!profile.onboarding_complete) {
-      appendSystem('Complete the onboarding wizard in the left panel first.')
+      pushToast('error', 'Complete the onboarding wizard in the left panel first.')
       return
     }
 
     setChatLoading(true)
-    appendSystem('Analyzing soreness and injury constraints…')
 
     try {
       const data = await runGeneratePlan(id, daysOverride)
@@ -715,7 +769,7 @@ export default function App() {
         : `Generated ${days}-day themed plan. Use day tabs on the right to inspect and control each day.`
       publishPlan(data, text)
     } catch (e) {
-      appendSystem(`Plan generation failed: ${e.message || 'Unknown error'}`)
+      pushToast('error', `Plan generation failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
     }
@@ -745,7 +799,7 @@ export default function App() {
             injuries: persistableInferred.injury_muscles ?? prev.injuries,
             intensity: persistableInferred.intensity ?? prev.intensity,
           }))
-          appendSystem('Detected profile updates applied before plan generation.')
+          pushToast('success', 'Applied detected profile updates before plan generation.')
         }
         await generatePlan(intent.days_per_week, 'chat')
         return
@@ -755,14 +809,17 @@ export default function App() {
         if (hasPersistableUpdates) {
           const detectedSummary = summarizeProfileUpdates(inferred)
           setChatMessages((prev) => [...prev, {
-            role: 'system',
+            role: 'assistant',
             text: intent.assistant_reply || 'Detected profile updates. Confirm before saving.',
             pendingProfileUpdate: inferred,
             pendingProfileSummary: detectedSummary,
             pendingProfileStatus: 'pending',
           }])
         } else {
-          appendSystem(intent.assistant_reply || 'Profile update detected but no concrete fields were extracted.')
+          setChatMessages((prev) => [...prev, {
+            role: 'assistant',
+            text: intent.assistant_reply || 'Profile update detected but no concrete fields were extracted.',
+          }])
         }
         return
       }
@@ -780,7 +837,13 @@ export default function App() {
       const res = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, message: msg, plan_summary: planSummary, krr_summary: krrSummary }),
+        body: JSON.stringify({
+          user_id: id,
+          message: msg,
+          plan_summary: planSummary,
+          krr_summary: krrSummary,
+          selected_day: selectedDay || null,
+        }),
       })
       const requestId = res.headers.get('X-Request-ID')
       if (requestId) setLastRequestId(requestId)
@@ -788,7 +851,7 @@ export default function App() {
       const data = await res.json()
       setChatMessages((prev) => [...prev, { role: 'assistant', text: data.response || 'No response.' }])
     } catch (e) {
-      appendSystem(`Chat failed: ${e.message || 'Unknown error'}`)
+      pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
     }
@@ -836,7 +899,6 @@ export default function App() {
       }
     })
     if (payload?.message) {
-      appendSystem(payload.message)
       pushToast('success', payload.message)
     } else {
       pushToast('success', 'Action completed successfully.')
@@ -849,7 +911,6 @@ export default function App() {
     if (!id) return
     setChatLoading(true)
     try {
-      appendSystem(`Regenerating ${selectedDay} with current constraints…`)
       const res = await fetch(`${API}/plan/day/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -861,7 +922,6 @@ export default function App() {
       const payload = await res.json()
       applyDayActionResult(payload)
     } catch (e) {
-      appendSystem(`Regeneration failed: ${e.message || 'Unknown error'}`)
       pushToast('error', `Regeneration failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
@@ -885,7 +945,6 @@ export default function App() {
       const payload = await res.json()
       applyDayActionResult(payload)
     } catch (e) {
-      appendSystem(`Reduce volume failed: ${e.message || 'Unknown error'}`)
       pushToast('error', `Reduce volume failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
@@ -909,7 +968,6 @@ export default function App() {
       const payload = await res.json()
       applyDayActionResult(payload)
     } catch (e) {
-      appendSystem(`Swap exercise failed: ${e.message || 'Unknown error'}`)
       pushToast('error', `Swap exercise failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
@@ -954,7 +1012,7 @@ export default function App() {
   const completeOnboarding = async () => {
     const id = (userId || '').trim()
     if (!id) {
-      appendSystem('Select or create an athlete profile before saving onboarding.')
+      pushToast('error', 'Select or create an athlete profile before saving onboarding.')
       return
     }
     await saveProfile({
@@ -964,7 +1022,7 @@ export default function App() {
       injury_muscles: onboardingDraft.injuries,
       intensity: onboardingDraft.intensity,
     })
-    appendSystem('Onboarding complete. You can now generate a validated plan.')
+    pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
   }
 
   return (
@@ -1182,8 +1240,6 @@ export default function App() {
                 value={activeAthleteId}
                 onChange={(e) => {
                   setActiveAthleteId(e.target.value)
-                  const selected = athletes.find((a) => a.id === e.target.value)
-                  if (selected) appendSystem(`Loaded athlete: ${selected.name}`)
                 }}
                 className="user-input"
               >
@@ -1192,18 +1248,18 @@ export default function App() {
                 ))}
               </select>
               <button type="button" className="btn btn-ghost" onClick={() => setNewAthleteOpen((v) => !v)}>
-                {newAthleteOpen ? 'Cancel' : 'New Athlete'}
+                {newAthleteOpen ? 'Cancel' : '➕ New Athlete'}
               </button>
             </div>
               <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
-              Generate Plan
+              ⚡ Generate Plan
             </button>
           </div>
         </div>
 
           <div className="status-strip">
             <span className="pulse-dot" />
-            <span>Ready • Generate a plan or ask for changes</span>
+            <span>{statusText}</span>
           </div>
 
         {newAthleteOpen && (
@@ -1224,13 +1280,13 @@ export default function App() {
               <p className="muted">Start with one of these:</p>
               <div className="quick-chips">
                 <button type="button" className="quick-chip" onClick={() => sendChat('Plan a 3-day split')}>
-                  Build a 3-day split
+                  🏗️ Build a 3-day split
                 </button>
                 <button type="button" className="quick-chip" onClick={() => sendChat('Show my progress')}>
-                  Review training progress
+                  📈 Review training progress
                 </button>
                 <button type="button" className="quick-chip" onClick={() => sendChat('Generate my plan for this week')}>
-                  Generate this week’s plan
+                  🗓️ Generate this week’s plan
                 </button>
               </div>
             </div>
@@ -1238,8 +1294,31 @@ export default function App() {
 
           {chatMessages.map((m, idx) => (
             <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
-              <p className="msg-role">{m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Coach AI' : 'System'}</p>
-              <p>{m.text}</p>
+              {(() => {
+                const text = String(m.text || '')
+                const lineBreaks = (text.match(/\n/g) || []).length
+                const isLongAssistantReply = m.role === 'assistant' && (text.length > 520 || lineBreaks > 8)
+                const isExpanded = Boolean(expandedMsg[idx])
+                return (
+                  <>
+                    {m.role !== 'system' && <p className="msg-role">{m.role === 'user' ? '🧑 You' : '🤖 Coach AI'}</p>}
+                    <div className={`msg-body markdown-body ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {text}
+                      </ReactMarkdown>
+                    </div>
+                    {isLongAssistantReply && (
+                      <button
+                        type="button"
+                        className="msg-expand"
+                        onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                      >
+                        {isExpanded ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
+                  </>
+                )
+              })()}
               {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
               {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
 
@@ -1317,34 +1396,52 @@ export default function App() {
                       className="btn btn-ghost btn-sm"
                       onClick={() => openExplanationDrawer(selectedDay || sortedDayLabelsFromPlan(m.plan)[0])}
                     >
-                      View reasoning
+                      🔍 View reasoning
                     </button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>Regenerate selected day</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>♻️ Regenerate selected day</button>
                   </div>
                 </div>
               )}
             </div>
           ))}
 
-          {chatLoading && <div className="msg msg-system loading">Thinking …</div>}
           <div ref={chatEndRef} />
         </div>
 
-        <form
-          className="chat-input-row"
-          onSubmit={(e) => {
-            e.preventDefault()
-            sendChat()
-          }}
-        >
-          <input
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            placeholder="Ask for a change (e.g. Regenerate Day 2 or make it lower impact)"
-            disabled={chatLoading}
-          />
-          <button type="submit" className="btn btn-primary" disabled={chatLoading}>Send</button>
-        </form>
+        <div className="assistant-bar" role="region" aria-label="Assistant actions">
+          <div className="system-hints" role="note" aria-label="Chat guidance prompts">
+            <p className="system-hints-title">🧭 System Tips</p>
+            <div className="system-hints-chips">
+              {guidedPrompts.map((prompt) => (
+                <button
+                  key={prompt.text}
+                  type="button"
+                  className="system-hint-chip"
+                  disabled={chatLoading}
+                  onClick={() => sendChat(prompt.text)}
+                >
+                  <span aria-hidden>{prompt.icon}</span> {prompt.text}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <form
+            className="chat-input-row"
+            onSubmit={(e) => {
+              e.preventDefault()
+              sendChat()
+            }}
+          >
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Ask anything (e.g. What am I doing today? / Explain Day 2 / Make next workout lower impact)"
+              disabled={chatLoading}
+            />
+            <button type="submit" className="btn btn-primary" disabled={chatLoading}>➤ Send</button>
+          </form>
+        </div>
 
         {DEV_MODE && lastRequestId && <p className="muted small">Request ID: {lastRequestId}</p>}
       </main>
@@ -1363,7 +1460,7 @@ export default function App() {
             <p className="empty-plan-title">No plan generated yet</p>
             <p className="muted">Generate a plan to populate the weekly schedule.</p>
             <button type="button" className="btn btn-primary btn-primary-action" disabled={chatLoading} onClick={() => generatePlan()}>
-              Generate Plan
+              ⚡ Generate Plan
             </button>
           </div>
         ) : (
@@ -1409,10 +1506,10 @@ export default function App() {
 
               <div className="day-actions row gap wrap">
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => openExplanationDrawer(selectedDay)}>
-                  Explain Day
+                  🔍 Explain Day
                 </button>
                 <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>
-                  Regenerate Day Plan
+                  ♻️ Regenerate Day Plan
                 </button>
               </div>
             </div>
