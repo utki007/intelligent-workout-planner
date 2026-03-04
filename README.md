@@ -1,4 +1,14 @@
-# Agentic Workout Planner
+---
+title: Agentic Workout Planner
+emoji: 🏋️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+## Overview
 
 A **Knowledge Representation & Reasoning (KRR)** workout planner that generates personalized **2–7 day weekly plans** using pyDatalog and respects user injuries. Optional **Azure OpenAI** provides natural-language explanations, intent routing, and chat responses.
 
@@ -102,6 +112,36 @@ python dev.py web --install
    - Say **"Generate my plan"** or click **Generate plan**.
    - Expand any day card to see exercises and use **See Thinking** to view KRR + LLM reasoning.
    - Use the chat panel to ask follow-up questions (e.g. why a day is rest, how to adjust for injuries).
+
+## Deploy on Hugging Face Spaces (Docker)
+
+This repo now includes a root `Dockerfile` for **Docker Spaces**.
+
+### What the container does
+
+- Builds the React frontend (`web/`) during image build.
+- Serves the built frontend from FastAPI (`api/app.py`) in the same container.
+- Exposes one process on port **7860** (required by Hugging Face Spaces).
+
+### Steps
+
+1. Create a new Hugging Face Space and choose **Docker** SDK.
+2. Push this repository to that Space.
+3. (Optional) Add Space secrets for Azure OpenAI:
+   - `AZURE_OPENAI_KEY`
+   - `AZURE_OPENAI_ENDPOINT`
+   - `AZURE_OPENAI_MODEL`
+4. Space build will use the included `Dockerfile` automatically.
+5. Once running, open the Space URL — UI and `/api/*` routes are served together.
+
+### Local Docker sanity check
+
+```bash
+docker build -t workout-planner-hf .
+docker run --rm -p 7860:7860 workout-planner-hf
+```
+
+Then open <http://localhost:7860>.
 
 ## Project Structure (clean map)
 

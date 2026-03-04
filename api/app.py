@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent.agent_state import AgentGoals, AgentState
@@ -69,7 +71,12 @@ app.add_middleware(
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 EXERCISES_PATH = os.path.join(DATA_DIR, "exercises_db.xlsx")
+FRONTEND_DIST_DIR = os.path.join(_PROJECT_ROOT, "web", "dist")
+FRONTEND_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")
 GENERIC_USER_ID = "default"
+
+if os.path.isdir(FRONTEND_ASSETS_DIR):
+    app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="assets")
 
 
 def _clip(value: str | None, limit: int = 160) -> str:
@@ -1405,3 +1412,38 @@ def chat(body: ChatIn):
         len(response or ""),
     )
     return ChatOut(response=response)
+
+
+def _frontend_index_path() -> str | None:
+    index_path = os.path.join(FRONTEND_DIST_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return index_path
+    return None
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend_root():
+    index_path = _frontend_index_path()
+    if index_path:
+        return FileResponse(index_path)
+    return {
+        "message": "API running. Frontend build not found.",
+        "hint": "Build web app with `npm run build` inside `web/`.",
+    }
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_frontend_spa(full_path: str):
+    if full_path.startswith("api"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if full_path:
+        requested_path = os.path.join(FRONTEND_DIST_DIR, full_path)
+        if os.path.isfile(requested_path):
+            return FileResponse(requested_path)
+
+    index_path = _frontend_index_path()
+    if index_path:
+        return FileResponse(index_path)
+
+    raise HTTPException(status_code=404, detail="Frontend build not found")
