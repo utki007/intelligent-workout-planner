@@ -54,6 +54,15 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertEqual(updates.get("injury_update", {}).get("operation"), "clear")
         self.assertEqual(updates.get("injury_muscles"), [])
 
+    def test_heuristic_profile_updates_detects_equipment_preferences(self):
+        updates = _heuristic_profile_updates(
+            "Please use only dumbbells and resistance bands for my workouts",
+            {"injury_muscles": []},
+        )
+        equipment = updates.get("equipment_preferences", [])
+        self.assertIn("dumbbell", equipment)
+        self.assertIn("resistance band", equipment)
+
 
 if __name__ == "__main__":
     unittest.main()

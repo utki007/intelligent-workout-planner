@@ -267,6 +267,7 @@ class LLM:
           "profile_updates": {
             "days_per_week": int(2-7) | null,
             "intensity": float(1-5) | null,
+            "equipment_preferences": [str] | null,
             "injury_update": {
               "status": "injured" | "recovered" | "cleared" | "unknown",
               "operation": "add" | "remove" | "clear" | "none",
@@ -298,6 +299,7 @@ class LLM:
             "profile_updates must be null or an object with optional keys:\n"
             "- days_per_week (2-7)\n"
             "- intensity (1-5)\n"
+            "- equipment_preferences (list of lowercase equipment names)\n"
             "- injury_update (object with status, operation, muscles)\n"
             "injury_update.status must be one of: injured, recovered, cleared, unknown.\n"
             "injury_update.operation must be one of: add, remove, clear, none.\n"
@@ -307,6 +309,8 @@ class LLM:
             "intent=generate_plan and days_per_week=<that number>.\n"
             "- If the user asks to change injuries, intensity, or profile settings without asking to generate now, "
             "intent=profile_update.\n"
+            "- If the user mentions available/preferred equipment (e.g. dumbbell, barbell, cable, body weight), "
+            "set profile_updates.equipment_preferences.\n"
             "- Injury semantics:\n"
             "  - new pain/injury -> status=injured, operation=add.\n"
             "  - recovery/better/healed/no longer hurt for specific muscles -> status=recovered, operation=remove.\n"
@@ -317,6 +321,7 @@ class LLM:
             "- 'Update my injuries, shoulder is better' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected an injury recovery update.\",\"profile_updates\":{\"injury_update\":{\"status\":\"recovered\",\"operation\":\"remove\",\"muscles\":[\"delts\"]}}}\n"
             "- 'I hurt my knee and shoulder' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected new injury updates.\",\"profile_updates\":{\"injury_update\":{\"status\":\"injured\",\"operation\":\"add\",\"muscles\":[\"quads\",\"delts\"]}}}\n"
             "- 'No injuries now' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I detected that injuries are cleared.\",\"profile_updates\":{\"injury_update\":{\"status\":\"cleared\",\"operation\":\"clear\",\"muscles\":[]}}}\n"
+            "- 'Use only dumbbells and bands' -> {\"intent\":\"profile_update\",\"days_per_week\":null,\"assistant_reply\":\"I saved your equipment preferences.\",\"profile_updates\":{\"equipment_preferences\":[\"dumbbell\",\"band\"]}}\n"
             "- 'Why this exercise?' -> {\"intent\":\"chat\",\"days_per_week\":null,\"assistant_reply\":null,\"profile_updates\":null}"
         )
         user_content = f"User message: {(user_message or '').strip()}"
@@ -362,6 +367,17 @@ class LLM:
                         intensity = float(upd_intensity)
                         if 1.0 <= intensity <= 5.0:
                             updates_out["intensity"] = intensity
+                    equipment = updates_raw.get("equipment_preferences")
+                    if isinstance(equipment, list):
+                        cleaned_eq = []
+                        seen_eq: set[str] = set()
+                        for item in equipment:
+                            eq = str(item).strip().lower()
+                            if eq and eq not in seen_eq:
+                                seen_eq.add(eq)
+                                cleaned_eq.append(eq)
+                        if cleaned_eq:
+                            updates_out["equipment_preferences"] = cleaned_eq
 
                     injury_raw = updates_raw.get("injury_update")
                     if isinstance(injury_raw, dict):
@@ -473,6 +489,7 @@ class LLM:
             "Rules:\n"
             "- Use ONLY exercises present in kb_evidence.recommended_by_muscle.\n"
             "- Never include exercises targeting injured muscles.\n"
+            "- If profile.equipment_preferences is non-empty, keep all exercises compatible with those equipment preferences.\n"
             "- Number of day objects must exactly equal constraints.days_per_week.\n"
             "- Determine the best day split/themes yourself from kb_evidence + profile (do not assume preset split templates).\n"
             "- Determine exercises per day using user intensity: (baseline intensity guide: 1=2-3, 2=4, 3=4-5, 4=5-6, 5=6-7;).\n"

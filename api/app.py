@@ -34,6 +34,7 @@ from agent.krr import (
     MUSCLE_ALIASES,
     MUSCLE_GROUP_EXPANSIONS,
     load_kb,
+    normalize_equipment_preferences,
     normalize_injury_muscles,
     query_recommended,
 )
@@ -104,6 +105,7 @@ def load_profile(user_id: str) -> dict:
     path = _profile_store_path(user_id)
     default = {
         "injury_muscles": [],
+        "equipment_preferences": [],
         "intensity": 3,
         "chat_history": [],
         "onboarding_complete": False,
@@ -117,6 +119,9 @@ def load_profile(user_id: str) -> dict:
             data = json.load(f)
         prof = {
             "injury_muscles": data.get("injury_muscles", []),
+            "equipment_preferences": sorted(
+                normalize_equipment_preferences(data.get("equipment_preferences", []))
+            ),
             "intensity": data.get("intensity", 3),
             "chat_history": data.get("chat_history", []),
             "onboarding_complete": data.get("onboarding_complete", False),
@@ -138,6 +143,7 @@ def load_profile(user_id: str) -> dict:
 def save_profile(
     user_id: str,
     injury_muscles: list[str] | None = None,
+    equipment_preferences: list[str] | None = None,
     intensity: float | None = None,
     onboarding_complete: bool | None = None,
     days_per_week: int | None = None,
@@ -147,6 +153,10 @@ def save_profile(
     prof = load_profile(user_id)
     if injury_muscles is not None:
         prof["injury_muscles"] = sorted(normalize_injury_muscles(injury_muscles))
+    if equipment_preferences is not None:
+        prof["equipment_preferences"] = sorted(
+            normalize_equipment_preferences(equipment_preferences)
+        )
     if intensity is not None:
         prof["intensity"] = max(1, min(5, float(intensity)))
     if onboarding_complete is not None:
@@ -158,12 +168,13 @@ def save_profile(
     with open(path, "w") as f:
         json.dump(prof, f, indent=2)
     logger.info(
-        "profile.save user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s",
+        "profile.save user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s equipment=%s",
         user_id,
         prof.get("onboarding_complete"),
         prof.get("days_per_week"),
         prof.get("intensity"),
         len(prof.get("injury_muscles", [])),
+        len(prof.get("equipment_preferences", [])),
     )
 
 
@@ -239,6 +250,7 @@ class ProfileIn(BaseModel):
     name: str | None = None
     experience_level: str | None = "beginner"
     injury_muscles: list[str] = []
+    equipment_preferences: list[str] | None = None
     days_per_week: int | None = None
 
 
@@ -276,6 +288,7 @@ class IntentInjuryUpdateOut(BaseModel):
 
 class IntentProfileUpdatesOut(BaseModel):
     injury_muscles: list[str] | None = None
+    equipment_preferences: list[str] | None = None
     injury_update: IntentInjuryUpdateOut | None = None
     intensity: float | None = None
     days_per_week: int | None = None
@@ -289,15 +302,19 @@ class IntentOut(BaseModel):
 
 
 REASONING_EXPLAINED = """
-The planner uses a Knowledge Base (KRR) with two rules:
+The planner uses a Knowledge Base (KRR) with three rules:
 
 1. FORBIDDEN(User, Exercise): An exercise is forbidden for you if it trains any muscle you listed as injured.
    → We never recommend exercises that target injured muscles.
 
-2. RECOMMENDED(User, Exercise): An exercise is recommended if it's in the DB, marked "beginner", and NOT forbidden.
+2. EQUIPMENT_ALLOWED(User, Exercise): If you set preferred equipment, an exercise must use one of those equipment types.
+   → Bodyweight exercises are always allowed alongside your selected equipment.
+
+3. RECOMMENDED(User, Exercise): An exercise is recommended if it's in the DB, marked "beginner", NOT forbidden,
+   and (when preferences are set) equipment-allowed.
    → The weekly plan is built by picking from recommended exercises for each day (Chest, Back, Legs, Arms, Shoulders).
 
-Facts come from: (a) the exercise DB (name, target muscle, difficulty), (b) your profile (injured muscles).
+Facts come from: (a) the exercise DB (name, target muscle, difficulty, equipment), (b) your profile (injured muscles, equipment preferences).
 The agent also tracks your state (soreness, weekly volume) to adjust sets and prioritize muscles over time.
 """
 
@@ -305,6 +322,7 @@ The agent also tracks your state (soreness, weekly volume) to adjust sets and pr
 class ProfileUpdateIn(BaseModel):
     user_id: str
     injury_muscles: list[str] | None = None
+    equipment_preferences: list[str] | None = None
     intensity: float | None = None
     onboarding_complete: bool | None = None
     days_per_week: int | None = None
@@ -351,6 +369,7 @@ def _build_user_profile_for_planner(user_id: str) -> tuple[dict, AgentGoals]:
         "name": user_id,
         "experience_level": "beginner",
         "injury_muscles": stored_profile.get("injury_muscles", []),
+        "equipment_preferences": stored_profile.get("equipment_preferences", []),
         "days_per_week": clamp_days_per_week(stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
     }
@@ -468,6 +487,7 @@ def _heuristic_intent(message: str) -> tuple[str, int | None]:
     }
     profile_terms = {
         "injury", "injuries", "intensity", "profile", "soreness", "recover",
+        "equipment", "dumbbell", "barbell", "kettlebell", "cable", "band", "machine", "bodyweight",
     }
     profile_verbs = {
         "update", "change", "edit", "set", "adjust",
@@ -540,6 +560,47 @@ def _extract_muscles_from_text(message: str) -> list[str]:
     return sorted(normalize_injury_muscles(matched_raw))
 
 
+_EQUIPMENT_TERM_MAP = {
+    "bodyweight": "body weight",
+    "body weight": "body weight",
+    "dumbbell": "dumbbell",
+    "dumbbells": "dumbbell",
+    "barbell": "barbell",
+    "barbells": "barbell",
+    "kettlebell": "kettlebell",
+    "kettlebells": "kettlebell",
+    "cable": "cable",
+    "cables": "cable",
+    "band": "band",
+    "bands": "band",
+    "resistance band": "resistance band",
+    "resistance bands": "resistance band",
+    "smith machine": "smith machine",
+    "machine": "leverage machine",
+    "machines": "leverage machine",
+    "lever machine": "leverage machine",
+    "leverage machine": "leverage machine",
+    "stability ball": "stability ball",
+    "medicine ball": "medicine ball",
+    "ez bar": "ez barbell",
+    "ez barbell": "ez barbell",
+    "trap bar": "trap bar",
+    "rope": "rope",
+    "sled": "sled machine",
+}
+
+
+def _extract_equipment_from_text(message: str) -> list[str]:
+    text = (message or "").strip().lower()
+    if not text:
+        return []
+    matched_raw: list[str] = []
+    for term in sorted(_EQUIPMENT_TERM_MAP.keys(), key=len, reverse=True):
+        if term and re.search(rf"\b{re.escape(term)}\b", text):
+            matched_raw.append(_EQUIPMENT_TERM_MAP[term])
+    return sorted(normalize_equipment_preferences(matched_raw))
+
+
 def _apply_injury_operation(current_injuries: list[str], operation: str, muscles: list[str]) -> list[str]:
     current = set(normalize_injury_muscles(current_injuries))
     parsed = set(normalize_injury_muscles(muscles))
@@ -578,6 +639,25 @@ def _coerce_profile_updates_from_intent_payload(
         i = float(intensity)
         if 1.0 <= i <= 5.0:
             updates["intensity"] = i
+
+    equipment_raw = payload_updates.get("equipment_preferences")
+    parsed_equipment: list[str] = []
+    if isinstance(equipment_raw, list):
+        parsed_equipment = sorted(
+            normalize_equipment_preferences([str(eq).strip().lower() for eq in equipment_raw])
+        )
+    if not parsed_equipment:
+        text_equipment = _extract_equipment_from_text(message)
+        equipment_signal = bool(
+            re.search(
+                r"\b(equipment|gear|using|use|with|only|available|have|access)\b",
+                (message or "").lower(),
+            )
+        )
+        if text_equipment and equipment_signal:
+            parsed_equipment = text_equipment
+    if parsed_equipment:
+        updates["equipment_preferences"] = parsed_equipment
 
     # Injury update semantics
     current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
@@ -641,6 +721,13 @@ def _heuristic_profile_updates(message: str, current_profile: dict) -> dict:
             updates["intensity"] = max(1.0, min(5.0, intensity))
         except (TypeError, ValueError):
             pass
+
+    equipment = _extract_equipment_from_text(text)
+    equipment_signal = bool(
+        re.search(r"\b(equipment|gear|using|use|with|only|available|have|access)\b", text)
+    )
+    if equipment and equipment_signal:
+        updates["equipment_preferences"] = equipment
 
     current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
     muscles = _extract_muscles_from_text(text)
@@ -863,6 +950,7 @@ def _structured_progress_facts(user_id: str, profile: dict) -> str:
         "query_type": "progress_lookup",
         "days_per_week": profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK),
         "injuries": profile.get("injury_muscles", []) or [],
+        "equipment_preferences": profile.get("equipment_preferences", []) or [],
         "latest_plan_days": total_days,
         "latest_plan_exercises": total_exercises,
     }
@@ -909,11 +997,12 @@ def get_profile(user_id: str = Query(..., description="User ID")):
     user_id = _safe_user_id(user_id)
     prof = load_profile(user_id)
     logger.info(
-        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s",
+        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s equipment=%s",
         user_id,
         prof.get("onboarding_complete"),
         prof.get("days_per_week"),
         len(prof.get("injury_muscles", [])),
+        len(prof.get("equipment_preferences", [])),
     )
     return prof
 
@@ -933,23 +1022,56 @@ def get_injury_map():
     return {"joints": joints, "muscles": muscles}
 
 
+@app.get("/api/equipment-options")
+def get_equipment_options():
+    """Return canonical equipment options present in the exercise DB."""
+    fallback = [
+        "body weight",
+        "dumbbell",
+        "barbell",
+        "kettlebell",
+        "cable",
+        "band",
+        "resistance band",
+        "smith machine",
+        "leverage machine",
+        "stability ball",
+        "medicine ball",
+        "ez barbell",
+    ]
+    try:
+        df = get_exercises_df()
+        if "equipment" not in df.columns:
+            return {"equipment": fallback}
+        options: set[str] = set()
+        for raw in df["equipment"].fillna("").astype(str).tolist():
+            options.update(normalize_equipment_preferences([raw]))
+        normalized = sorted(options)
+        return {"equipment": normalized or fallback}
+    except Exception:
+        logger.exception("equipment.options failed")
+        return {"equipment": fallback}
+
+
 @app.put("/api/profile")
 def update_profile(body: ProfileUpdateIn):
     """Save profile fields: injuries, intensity, onboarding data."""
     save_profile(
         body.user_id,
         injury_muscles=body.injury_muscles,
+        equipment_preferences=body.equipment_preferences,
         intensity=body.intensity,
         onboarding_complete=body.onboarding_complete,
         days_per_week=body.days_per_week,
     )
     logger.info(
-        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s",
+        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s equipment=%s",
         body.user_id,
         body.onboarding_complete,
         body.days_per_week,
         body.intensity,
         None if body.injury_muscles is None else len(body.injury_muscles),
+        None if body.equipment_preferences is None else len(body.equipment_preferences),
     )
     return {"ok": True}
 
@@ -1045,7 +1167,7 @@ def get_db():
     exercises = []
     try:
         df = get_exercises_df()
-        exercises = df[["name", "target", "difficulty"]].fillna("").astype(str).to_dict("records")
+        exercises = df[["name", "target", "difficulty", "equipment"]].fillna("").astype(str).to_dict("records")
     except Exception:
         pass
     return {
@@ -1061,9 +1183,16 @@ def get_reasoning():
         "how_it_works": REASONING_EXPLAINED.strip(),
         "rules": [
             "forbidden(User, Exercise) ← exercise trains a muscle M AND user has M injured",
-            "recommended(User, Exercise) ← exercise in DB AND difficulty=beginner AND NOT forbidden(User, Exercise)",
+            "equipment_allowed(User, Exercise) ← user prefers equipment Eq AND exercise uses Eq",
+            "equipment_allowed(User, Exercise) ← exercise uses body weight",
+            "recommended(User, Exercise) ← exercise in DB AND difficulty=beginner AND NOT forbidden(User, Exercise)"
+            " AND (no equipment preference OR equipment_allowed(User, Exercise))",
         ],
-        "facts_from": ["exercises_db.csv (name, target, difficulty)", "your injuries list"],
+        "facts_from": [
+            "exercises_db.csv (name, target, difficulty, equipment)",
+            "your injuries list",
+            "your equipment preferences",
+        ],
     }
 
 
@@ -1078,18 +1207,27 @@ def generate_plan(profile: ProfileIn):
     # Load full profile so we can respect stored limitations (injuries, intensity, days/week)
     stored_profile = load_profile(user_id)
     injuries = profile.injury_muscles if profile.injury_muscles else stored_profile["injury_muscles"]
+    equipment_preferences = (
+        sorted(normalize_equipment_preferences(profile.equipment_preferences))
+        if profile.equipment_preferences is not None
+        else stored_profile.get("equipment_preferences", [])
+    )
     logger.info(
-        "plan.generate.start user_id=%s onboarding=%s days_per_week=%s injuries_in_request=%s injuries_effective=%s intensity=%s",
+        "plan.generate.start user_id=%s onboarding=%s days_per_week=%s injuries_in_request=%s injuries_effective=%s equipment_effective=%s intensity=%s",
         user_id,
         stored_profile.get("onboarding_complete"),
         stored_profile.get("days_per_week"),
         len(profile.injury_muscles or []),
         len(injuries or []),
+        len(equipment_preferences or []),
         stored_profile.get("intensity"),
     )
     if injuries:
         save_profile(user_id, injury_muscles=injuries)
         stored_profile["injury_muscles"] = injuries
+    if profile.equipment_preferences is not None:
+        save_profile(user_id, equipment_preferences=equipment_preferences)
+        stored_profile["equipment_preferences"] = equipment_preferences
 
     # Derive agent goals from profile intensity (1–5 slider).
     # Lower intensity → lower weekly volume cap; higher intensity → higher cap.
@@ -1110,6 +1248,7 @@ def generate_plan(profile: ProfileIn):
         "name": profile.name or "Generic User",
         "experience_level": profile.experience_level or "beginner",
         "injury_muscles": injuries,
+        "equipment_preferences": equipment_preferences,
         # Respect preferred training frequency unless an override was explicitly requested
         "days_per_week": clamp_days_per_week(requested_days or stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
@@ -1317,19 +1456,24 @@ def chat(body: ChatIn):
 
     profile_context = None
     if prof.get("onboarding_complete"):
-        profile_context = f"User profile: Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
+        profile_context = (
+            f"User profile: Days/week={prof.get('days_per_week', 5)}, "
+            f"Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}, "
+            f"Equipment preferences={', '.join(prof.get('equipment_preferences', [])) or 'none'}."
+        )
 
     kb_context = None
     try:
         # Ground chat in the exercise KB: beginner exercises filtered by injuries.
         df = get_exercises_df()
         injuries = prof.get("injury_muscles", []) or []
-        load_kb(df, user_id, injuries)
+        equipment = prof.get("equipment_preferences", []) or []
+        load_kb(df, user_id, injuries, equipment_preferences=equipment)
         recommended = query_recommended(user_id)
         sample = recommended[:40]
         kb_context = (
             "Grounding (exercise knowledge base): Only suggest exercises that appear in the DB, "
-            "are beginner-friendly, and do not target injured muscles.\n"
+            "are beginner-friendly, do not target injured muscles, and respect preferred equipment when set.\n"
             f"Available recommended exercises (sample): {', '.join(sample) if sample else '(none)'}"
         )
     except Exception:

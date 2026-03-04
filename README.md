@@ -197,9 +197,11 @@ For the **API/web path**, planning is currently **stateless** (no soreness/volum
 
 ## KRR (Knowledge Base)
 
-- **Facts:** `is_exercise(E)`, `trains_muscle(E, M)`, `has_difficulty(E, D)`, `injured_muscle(User, M)`.
+- **Facts:** `is_exercise(E)`, `trains_muscle(E, M)`, `has_difficulty(E, D)`, `uses_equipment(E, Eq)`, `injured_muscle(User, M)`, `preferred_equipment(User, Eq)`.
 - **Rules:**  
   - `forbidden(User, E)` ← exercise trains an injured muscle.  
-  - `recommended(User, E)` ← beginner and not forbidden.
+  - `equipment_allowed(User, E)` ← user prefers equipment `Eq` and exercise uses `Eq`.
+  - `equipment_allowed(User, E)` ← exercise uses `body weight` (always allowed baseline).
+  - `recommended(User, E)` ← beginner, not forbidden, and equipment-compatible when preferences are set.
 
-Query by muscle or filter by injuries via `agent/krr.py`; reasoning text is shown per day in CLI and Streamlit.
+Query by muscle or filter by injuries/equipment via `agent/krr.py`; reasoning text is shown per day in CLI and Streamlit.

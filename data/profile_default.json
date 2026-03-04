@@ -1,5 +1,8 @@
 {
   "injury_muscles": [],
+  "equipment_preferences": [
+    "band"
+  ],
   "intensity": 5,
   "chat_history": [
     {
@@ -36,6 +39,11 @@
       "ts": 1772600257,
       "user": "ok",
       "assistant": "It looks like you have a saved workout plan! Here\u2019s a quick summary of your current week:\n\n### Current Weekly Plan\n- **Day 1**: \n  - Dumbbell biceps curl squat\n  - Dumbbell lying triceps extension\n  - Push-up\n  - Lever bicep curl\n  - EZ barbell seated curls\n\n- **Day 2**: \n  - Dumbbell goblet squat\n  - Lever seated leg curl\n  - Band squat\n\n- **Day 3**: \n  - Air bike\n  - Butt-ups\n  - Crunch floor\n  - Band seated twist\n  - Band standing crunch\n\n- **Day 4**: \n  - Mountain climber\n  - Jump rope\n  - Walking on incline treadmill\n  - Walk elliptical cross trainer\n  - Swing 360\n\n- **Day 5**: \n  - Hamstring stretch\n  - Roller hip stretch\n  - Calf stretch with rope\n\n### Notes\n- Your plan avoids exercises that target your injured deltoids, levator scapulae, traps, and upper back.\n- If you have any specific concerns or want to adjust your plan, let me know!"
+    },
+    {
+      "ts": 1772650262,
+      "user": "Recommend a weekly plan for me",
+      "assistant": "It looks like you already have a saved plan! Here's a quick summary of your current weekly workout schedule:\n\n### Weekly Plan Summary\n\n**Day 1:**\n- Band Squat\n- Inchworm\n- Band One Arm Standing Low Row\n- Tuck Crunch\n- Oblique Crunch v. 2\n- Reverse Crunch\n\n**Day 2:**\n- Band Step-Up\n- Squat to Overhead Reach\n- Standing Calves\n- Iron Cross Stretch\n- Basic Toe Touch (Male)\n- Band Squat Row\n\n**Day 3:**\n- Band Bench Press\n- Triceps Dips Floor\n- Band Shoulder Press\n- Isometric Chest Squeeze\n- Drop Push Up\n- Push-Up (Wall) v. 2\n\n**Day 4:**\n- Frog Crunch\n- Glute Bridge Two Legs on Bench (Male)\n- Inchworm\n- Tuck Crunch\n- Oblique Crunch v. 2\n- Reverse Crunch\n\n**Day 5:**\n- Mountain Climber\n- Hamstring Stretch\n- High Knee Against Wall\n- Short Stride Run\n- Run (Equipment)\n- Run\n\nIf you have any specific adjustments or recovery needs, please let me know!"
     }
   ],
   "onboarding_complete": true,
