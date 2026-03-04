@@ -123,8 +123,7 @@ For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 │   ├── krr.py               # pyDatalog KB: forbidden/recommended, reasoning
 │   └── llm.py               # Azure OpenAI wrapper (chat, intent, KB-grounded plan synthesis)
 ├── planner/
-│   ├── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (2–7 days)
-│   └── splits.json          # Legacy artifact (no longer used by planner runtime)
+│   └── weekly_planner.py    # Weekly planner, uses KRR evidence + LLM synthesis + policy validation (2–7 days)
 ├── api/
 │   └── app.py               # FastAPI: /api/plan, /api/profile, /api/explanation, /api/feedback, /api/chat
 ├── web/                     # Node.js (React + Vite) chat frontend

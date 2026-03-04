@@ -4,8 +4,7 @@ import remarkGfm from 'remark-gfm'
 
 const API = '/api'
 const DEV_MODE = import.meta.env.DEV
-const ATHLETE_STORAGE_KEY = 'workout_athlete_profiles'
-const ATHLETE_ACTIVE_KEY = 'workout_active_athlete_id'
+const GENERIC_USER_ID = 'default'
 
 const DEFAULT_JOINT_MUSCLE_MAP = {
   shoulder: ['delts', 'traps', 'upper back', 'levator scapulae'],
@@ -85,16 +84,6 @@ function sorenessClass(value) {
   if (value >= 3) return 'heat-mid'
   if (value >= 2) return 'heat-low'
   return 'heat-none'
-}
-
-function makeAthleteId(name) {
-  const base = String(name || 'athlete')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 24) || 'athlete'
-  const suffix = Math.random().toString(36).slice(2, 6)
-  return `athlete_${base}_${suffix}`
 }
 
 function summarizeProfileUpdates(updates) {
@@ -217,15 +206,7 @@ function uniqueMusclesFromJointMap(jointMap, selectedMuscles = []) {
 }
 
 export default function App() {
-  const [athletes, setAthletes] = useState([])
-  const [activeAthleteId, setActiveAthleteId] = useState('')
-  const [newAthleteOpen, setNewAthleteOpen] = useState(false)
-  const [newAthleteName, setNewAthleteName] = useState('')
-  const [renameAthleteOpen, setRenameAthleteOpen] = useState(false)
-  const [renameAthleteName, setRenameAthleteName] = useState('')
-  const [athleteMenuOpen, setAthleteMenuOpen] = useState(false)
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [userId, setUserId] = useState('')
+  const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
   const [profileEdit, setProfileEdit] = useState(false)
 
@@ -266,47 +247,6 @@ export default function App() {
 
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
-
-  const activeAthlete = useMemo(
-    () => athletes.find((a) => a.id === activeAthleteId) || null,
-    [athletes, activeAthleteId],
-  )
-
-  useEffect(() => {
-    let stored = []
-    try {
-      const raw = localStorage.getItem(ATHLETE_STORAGE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (Array.isArray(parsed)) stored = parsed.filter((x) => x && x.id && x.name)
-      }
-    } catch {
-      stored = []
-    }
-
-    if (!stored.length) {
-      stored = [{ id: 'athlete_default', name: 'My Athlete' }]
-    }
-
-    setAthletes(stored)
-    const lastActive = localStorage.getItem(ATHLETE_ACTIVE_KEY)
-    const fallbackId = stored[0]?.id || ''
-    setActiveAthleteId(stored.some((a) => a.id === lastActive) ? lastActive : fallbackId)
-  }, [])
-
-  useEffect(() => {
-    if (!activeAthleteId) return
-    const match = athletes.find((a) => a.id === activeAthleteId)
-    if (!match) return
-    setUserId(match.id)
-    setRenameAthleteName(match.name)
-    localStorage.setItem(ATHLETE_ACTIVE_KEY, match.id)
-  }, [activeAthleteId, athletes])
-
-  useEffect(() => {
-    if (!athletes.length) return
-    localStorage.setItem(ATHLETE_STORAGE_KEY, JSON.stringify(athletes))
-  }, [athletes])
 
   useEffect(() => {
     let cancelled = false
@@ -395,7 +335,7 @@ export default function App() {
       if (!chatLoading) chatInputRef.current?.focus()
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [chatLoading, activeAthleteId])
+  }, [chatLoading])
 
   useEffect(() => {
     const id = (userId || '').trim()
@@ -425,67 +365,6 @@ export default function App() {
       })
       .catch(() => setProfile(DEFAULT_PROFILE))
   }, [userId])
-
-  const createAthlete = () => {
-    const name = newAthleteName.trim()
-    if (!name) {
-      pushToast('error', 'Enter an athlete name first.')
-      return
-    }
-    const id = makeAthleteId(name)
-    const next = { id, name }
-    setAthletes((prev) => [next, ...prev])
-    setActiveAthleteId(id)
-    setNewAthleteName('')
-    setNewAthleteOpen(false)
-    pushToast('success', `Switched to ${name}`)
-  }
-
-  const renameAthlete = () => {
-    const id = activeAthleteId
-    const name = renameAthleteName.trim()
-    if (!id) {
-      pushToast('error', 'No athlete selected.')
-      return
-    }
-    if (!name) {
-      pushToast('error', 'Enter a new athlete name.')
-      return
-    }
-    setAthletes((prev) => prev.map((a) => (a.id === id ? { ...a, name } : a)))
-    setRenameAthleteOpen(false)
-    setAthleteMenuOpen(false)
-    pushToast('success', `Renamed to ${name}`)
-  }
-
-  const requestDeleteAthlete = () => {
-    const id = activeAthleteId
-    if (!id) {
-      pushToast('error', 'No athlete selected.')
-      return
-    }
-    if (athletes.length <= 1) {
-      pushToast('error', 'You must keep at least one athlete profile.')
-      return
-    }
-    setDeleteConfirmOpen(true)
-  }
-
-  const deleteAthlete = () => {
-    const id = activeAthleteId
-    if (!id) return
-    const target = athletes.find((a) => a.id === id)
-    const remaining = athletes.filter((a) => a.id !== id)
-    const nextActive = remaining[0]?.id || ''
-    setAthletes(remaining)
-    setActiveAthleteId(nextActive)
-    setActivePlan(null)
-    setSelectedDay(null)
-    setProfile(DEFAULT_PROFILE)
-    setDeleteConfirmOpen(false)
-    setAthleteMenuOpen(false)
-    pushToast('success', `Deleted ${target?.name || 'athlete'} and switched profile.`)
-  }
 
   const stateRows = useMemo(() => {
     const soreness = profile.soreness_per_muscle || {}
@@ -698,7 +577,7 @@ export default function App() {
   const generatePlan = async (daysOverride = null, source = 'button', activityHint = '') => {
     const id = (userId || '').trim()
     if (!id) {
-      pushToast('error', 'Select or create an athlete profile first.')
+      pushToast('error', 'Profile unavailable. Refresh and try again.')
       return
     }
 
@@ -1000,7 +879,7 @@ export default function App() {
   const completeOnboarding = async () => {
     const id = (userId || '').trim()
     if (!id) {
-      pushToast('error', 'Select or create an athlete profile before saving onboarding.')
+      pushToast('error', 'Profile unavailable. Refresh and try again.')
       return
     }
     await saveProfile({
@@ -1037,62 +916,8 @@ export default function App() {
       </div>
 
       <aside className="left-panel card">
-        <h2 className="panel-title">Athlete Profile & State</h2>
+        <h2 className="panel-title">Profile & State</h2>
         <p className="panel-subtitle">Set profile, review readiness, and track recovery.</p>
-
-        <section className="panel-section">
-          <div className="section-head">
-            <h3>Current Athlete</h3>
-            <div className="athlete-settings-wrap">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm settings-btn"
-                aria-label="Athlete settings"
-                onClick={() => setAthleteMenuOpen((v) => !v)}
-              >
-                ⚙
-              </button>
-              {athleteMenuOpen && (
-                <div className="settings-menu">
-                  <button
-                    type="button"
-                    className="settings-item"
-                    onClick={() => {
-                      setRenameAthleteOpen((v) => !v)
-                      setAthleteMenuOpen(false)
-                    }}
-                  >
-                    Rename athlete
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-item danger"
-                    onClick={() => {
-                      requestDeleteAthlete()
-                      setAthleteMenuOpen(false)
-                    }}
-                  >
-                    Delete athlete
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-          <p className="section-hint">Switch or manage the active athlete profile.</p>
-          <p className="profile-active-name">🧍 {activeAthlete?.name || 'No athlete selected'}</p>
-          {DEV_MODE && <p className="muted small">ID: {activeAthlete?.id || '-'}</p>}
-          {renameAthleteOpen && (
-            <div className="new-athlete-row">
-              <input
-                value={renameAthleteName}
-                onChange={(e) => setRenameAthleteName(e.target.value)}
-                placeholder="New athlete name"
-                className="user-input"
-              />
-              <button type="button" className="btn btn-primary btn-sm" onClick={renameAthlete}>Save</button>
-            </div>
-          )}
-        </section>
 
         <section className="panel-section">
           <div className="section-head">
@@ -1223,22 +1048,6 @@ export default function App() {
             <p className="top-subtitle">Build safe, personalized weekly workouts</p>
           </div>
           <div className="top-actions">
-            <div className="athlete-picker">
-              <select
-                value={activeAthleteId}
-                onChange={(e) => {
-                  setActiveAthleteId(e.target.value)
-                }}
-                className="user-input"
-              >
-                {athletes.map((athlete) => (
-                  <option key={athlete.id} value={athlete.id}>{athlete.name}</option>
-                ))}
-              </select>
-              <button type="button" className="btn btn-ghost" onClick={() => setNewAthleteOpen((v) => !v)}>
-                {newAthleteOpen ? 'Cancel' : '➕ New Athlete'}
-              </button>
-            </div>
           </div>
         </div>
 
@@ -1248,18 +1057,6 @@ export default function App() {
               <span>{statusText}</span>
             </div>
           )}
-
-        {newAthleteOpen && (
-          <div className="new-athlete-row">
-            <input
-              value={newAthleteName}
-              onChange={(e) => setNewAthleteName(e.target.value)}
-              placeholder="Athlete name (e.g. Alex, Rehab Phase 1)"
-              className="user-input"
-            />
-            <button type="button" className="btn btn-primary btn-sm" onClick={createAthlete}>Create</button>
-          </div>
-        )}
 
         <div className="chat-zone">
           {chatMessages.map((m, idx) => (
@@ -1531,33 +1328,11 @@ export default function App() {
         )}
       </section>
 
-      {deleteConfirmOpen && (
-        <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-delete-title">
-          <div className="confirm-card">
-            <h3 id="confirm-delete-title">Delete athlete profile?</h3>
-            <p>
-              You are deleting <strong>{activeAthlete?.name || 'this athlete'}</strong>.
-              This removes it from your profile list and clears the current view.
-            </p>
-            <p className="muted small">A different athlete profile will be selected automatically.</p>
-            <div className="row gap confirm-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setDeleteConfirmOpen(false)}>
-                Cancel
-              </button>
-              <button type="button" className="btn btn-danger-solid" onClick={deleteAthlete}>
-                Yes, Delete
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {(drawerOpen || deleteConfirmOpen) && (
+      {drawerOpen && (
         <div
           className="drawer-backdrop"
           onClick={() => {
             if (drawerOpen) setDrawerOpen(false)
-            if (deleteConfirmOpen) setDeleteConfirmOpen(false)
           }}
           aria-hidden
         />

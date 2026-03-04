@@ -434,79 +434,10 @@ body {
   flex-wrap: wrap;
 }
 
-.athlete-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.athlete-picker .user-input {
-  min-width: 300px;
-}
-
 .top-actions .btn,
-.athlete-picker .user-input {
+.top-actions .user-input {
   min-height: 40px;
   white-space: nowrap;
-}
-
-.new-athlete-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  margin: 6px 0 10px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-soft);
-}
-
-.athlete-actions {
-  margin-top: 8px;
-}
-
-.athlete-settings-wrap {
-  position: relative;
-}
-
-.settings-btn {
-  min-width: 30px;
-  padding: 4px 8px;
-}
-
-.settings-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 160px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
-  padding: 6px;
-  display: grid;
-  gap: 4px;
-  z-index: 8;
-}
-
-.settings-item {
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 8px;
-  text-align: left;
-  padding: 7px 8px;
-  font-size: 0.8rem;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.settings-item:hover {
-  background: #f8fafc;
-  border-color: var(--border);
-}
-
-.settings-item.danger {
-  color: var(--red);
 }
 
 .btn-danger {
@@ -517,52 +448,6 @@ body {
 
 .btn-danger:hover:not(:disabled) {
   background: #fee2e2;
-}
-
-.btn-danger-solid {
-  background: var(--red);
-  color: #fff;
-}
-
-.btn-danger-solid:hover:not(:disabled) {
-  background: #991b1b;
-}
-
-.confirm-modal {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 35;
-  pointer-events: none;
-}
-
-.confirm-card {
-  width: min(460px, 92vw);
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.22);
-  padding: 14px;
-  pointer-events: auto;
-  animation: fadeIn 0.16s ease;
-}
-
-.confirm-card h3 {
-  margin: 0 0 8px;
-  font-size: 1rem;
-}
-
-.confirm-card p {
-  margin: 0 0 8px;
-  font-size: 0.88rem;
-  line-height: 1.45;
-}
-
-.confirm-actions {
-  justify-content: flex-end;
-  margin-top: 6px;
 }
 
 .chat-zone {
@@ -1494,10 +1379,6 @@ body {
 
   .top-actions {
     justify-content: flex-start;
-  }
-
-  .athlete-picker .user-input {
-    min-width: 220px;
   }
 
   .day-metrics-inline {
