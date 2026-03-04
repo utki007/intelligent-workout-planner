@@ -193,6 +193,7 @@ class LLM:
         krr_summary: str | None = None,
         user_id: str | None = None,
         profile_context: str | None = None,
+        has_saved_plan: bool | None = None,
     ) -> str:
         """
         Respond as the workout agent to a free-form user message (e.g. chat).
@@ -207,6 +208,8 @@ class LLM:
             context.append(f"User: {user_id}.")
         if profile_context:
             context.append(profile_context)
+        if has_saved_plan is not None:
+            context.append(f"Plan availability: {'saved_plan_present' if has_saved_plan else 'no_saved_plan' }.")
         if plan_summary:
             context.append(f"Current plan summary: {plan_summary[:600]}.")
         if krr_summary:
@@ -220,6 +223,8 @@ class LLM:
             "offer to generate one. If they mention recovery or changes, suggest updating their profile. "
             "If context is missing or ambiguous, ask one concise clarifying question instead of guessing. "
             "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names. "
+            "Never claim a current weekly plan exists unless plan context explicitly includes a current plan summary or saved plan status says it exists. "
+            "If saved plan status is no_saved_plan, do not list Day 1/Day 2 schedules or imply an existing plan; instead state there is no saved plan yet and offer to generate one. "
             "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
             "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )

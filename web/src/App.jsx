@@ -23,8 +23,6 @@ const DEFAULT_PROFILE = {
   days_per_week: 5,
 }
 
-const ONBOARDING_STEPS = ['Days / Week', 'Injuries', 'Intensity']
-
 function dayNumber(label) {
   const m = String(label || '').match(/\d+/)
   return m ? Number(m[0]) : 0
@@ -196,6 +194,65 @@ function uniqueMusclesFromJointMap(jointMap, selectedMuscles = []) {
   return out
 }
 
+function normalizeIntensityValue(value, fallback = 3) {
+  const raw = Number(value)
+  if (!Number.isFinite(raw)) return fallback
+  return Math.min(5, Math.max(1, Math.round(raw)))
+}
+
+function IconCalendar() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3" y="4.5" width="18" height="16" rx="4" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3 9.5H21" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 3V7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M16 3V7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function IconFlame() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12.2 3.8c.6 2.1-.4 3.6-1.9 5.4-1.4 1.7-2.8 3.4-2.8 5.8 0 2.8 2.2 5 5 5s5-2.2 5-5c0-3.9-2.8-5.7-5.3-8.2-.2-.2-.3-.5-.4-.8-.9.9-1.3 2-1.3 3.4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function IconShieldCheck() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 3.5 5.5 6v5.8c0 3.9 2.6 7.5 6.5 8.7 3.9-1.2 6.5-4.8 6.5-8.7V6L12 3.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="m9.2 12.2 2 2 3.8-3.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconAlertTriangle() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M10.7 4.7 3.1 18a1.6 1.6 0 0 0 1.4 2.4h15a1.6 1.6 0 0 0 1.4-2.4L13.3 4.7a1.6 1.6 0 0 0-2.6 0Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M12 9.2v4.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="16.3" r="1" fill="currentColor" />
+    </svg>
+  )
+}
+
+function IconEdit() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="m4 20 4.2-1 9.7-9.7a1.6 1.6 0 0 0 0-2.3l-.9-.9a1.6 1.6 0 0 0-2.3 0L5 15.8 4 20Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M13.8 6.2 17.8 10.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -233,10 +290,12 @@ export default function App() {
     injuries: [],
     intensity: 3,
   })
+  const [daysMenuOpen, setDaysMenuOpen] = useState(false)
   const [injuryMap, setInjuryMap] = useState(DEFAULT_JOINT_MUSCLE_MAP)
 
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
+  const daySelectRef = useRef(null)
 
   useEffect(() => {
     let cancelled = false
@@ -328,6 +387,21 @@ export default function App() {
   }, [chatLoading])
 
   useEffect(() => {
+    if (!daysMenuOpen) return undefined
+    const onDocPointerDown = (event) => {
+      if (!daySelectRef.current?.contains(event.target)) {
+        setDaysMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocPointerDown)
+    return () => document.removeEventListener('mousedown', onDocPointerDown)
+  }, [daysMenuOpen])
+
+  useEffect(() => {
+    if (!profileEdit) setDaysMenuOpen(false)
+  }, [profileEdit])
+
+  useEffect(() => {
     const id = (userId || '').trim()
     if (!id) {
       setProfile(DEFAULT_PROFILE)
@@ -343,11 +417,16 @@ export default function App() {
           ...DEFAULT_PROFILE,
           ...p,
         }
-        setProfile(next)
+        const normalizedIntensity = normalizeIntensityValue(next.intensity, 3)
+        const normalizedProfile = {
+          ...next,
+          intensity: normalizedIntensity,
+        }
+        setProfile(normalizedProfile)
         setOnboardingDraft({
           days: next.days_per_week ?? 5,
           injuries: next.injury_muscles || [],
-          intensity: next.intensity ?? 3,
+          intensity: normalizedIntensity,
         })
       })
       .catch(() => setProfile(DEFAULT_PROFILE))
@@ -442,33 +521,6 @@ export default function App() {
     }
   }
 
-  const applyDetectedProfileUpdate = async (messageIndex, updates) => {
-    const persisted = toPersistedProfileUpdates(updates || {})
-    if (Object.keys(persisted).length === 0) return
-    await saveProfile(persisted)
-    setOnboardingDraft((prev) => ({
-      ...prev,
-      days: persisted.days_per_week ?? prev.days,
-      injuries: persisted.injury_muscles ?? prev.injuries,
-      intensity: persisted.intensity ?? prev.intensity,
-    }))
-    setChatMessages((prev) => prev.map((m, idx) => (
-      idx === messageIndex
-        ? { ...m, pendingProfileStatus: 'applied' }
-        : m
-    )))
-    pushToast('success', 'Profile card updated from confirmed changes.')
-  }
-
-  const discardDetectedProfileUpdate = (messageIndex) => {
-    setChatMessages((prev) => prev.map((m, idx) => (
-      idx === messageIndex
-        ? { ...m, pendingProfileStatus: 'discarded' }
-        : m
-    )))
-    pushToast('success', 'Detected profile update discarded.')
-  }
-
   const runGeneratePlan = async (id, daysOverride = null) => {
     const res = await fetch(`${API}/plan`, {
       method: 'POST',
@@ -521,11 +573,6 @@ export default function App() {
     const id = (userId || '').trim()
     if (!id) {
       pushToast('error', 'Profile unavailable. Refresh and try again.')
-      return
-    }
-
-    if (!profile.onboarding_complete) {
-      pushToast('error', 'Complete the onboarding wizard in the left panel first.')
       return
     }
 
@@ -606,7 +653,7 @@ export default function App() {
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
             injuries: persistableInferred.injury_muscles ?? prev.injuries,
-            intensity: persistableInferred.intensity ?? prev.intensity,
+            intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
           }))
           pushToast('success', 'Applied detected profile updates before plan generation.')
         }
@@ -639,13 +686,17 @@ export default function App() {
         const fallbackReply = await requestAssistantChat(id, msg)
         const assistantText = intent.assistant_reply || fallbackReply
         if (hasPersistableUpdates) {
-          const detectedSummary = summarizeProfileUpdates(inferred)
+          await saveProfile(persistableInferred)
+          setOnboardingDraft((prev) => ({
+            ...prev,
+            days: persistableInferred.days_per_week ?? prev.days,
+            injuries: persistableInferred.injury_muscles ?? prev.injuries,
+            intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
+          }))
+          pushToast('success', 'Profile updated.')
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
-            pendingProfileUpdate: inferred,
-            pendingProfileSummary: detectedSummary,
-            pendingProfileStatus: 'pending',
           }])
         } else {
           setChatMessages((prev) => [...prev, {
@@ -828,9 +879,27 @@ export default function App() {
       onboarding_complete: true,
       days_per_week: onboardingDraft.days,
       injury_muscles: onboardingDraft.injuries,
-      intensity: onboardingDraft.intensity,
+      intensity: normalizeIntensityValue(onboardingDraft.intensity, 3),
     })
     pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
+  }
+
+  const safeIntensity = normalizeIntensityValue(profile.intensity, 3)
+  const formattedIntensity = String(safeIntensity)
+  const injuryList = profile.injury_muscles || []
+  const hasInjuries = injuryList.length > 0
+
+  const toggleProfileEdit = () => {
+    if (profileEdit) {
+      setOnboardingDraft({
+        days: profile.days_per_week ?? 5,
+        injuries: profile.injury_muscles || [],
+        intensity: normalizeIntensityValue(profile.intensity, 3),
+      })
+      setProfileEdit(false)
+      return
+    }
+    setProfileEdit(true)
   }
 
   return (
@@ -857,54 +926,106 @@ export default function App() {
       </div>
 
       <aside className="left-panel card">
-        <h2 className="panel-title">Profile & State</h2>
-        <p className="panel-subtitle">Set profile, review readiness, and track recovery.</p>
+        <div className="section-head training-profile-head">
+          <h2 className="panel-title">Training Profile</h2>
+        </div>
+        <p className="panel-subtitle">Set training days, intensity, and injury filters.</p>
 
-        <section className="panel-section">
-          <div className="section-head">
-            <h3>Profile Card</h3>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setProfileEdit((v) => !v)}>
-              {profileEdit ? 'Done' : 'Edit'}
-            </button>
-          </div>
-          <p className="section-hint">These values drive plan generation and safety filters.</p>
+        <section className="panel-section training-profile-card">
 
           {!profileEdit ? (
-            <div className="profile-grid">
-              <p><span className="profile-icon">📅</span><strong> Days/week:</strong> {profile.days_per_week}</p>
-              <p><span className="profile-icon">🔥</span><strong> Intensity:</strong> {profile.intensity}</p>
-              <div className="mini-meter">
-                <div className="mini-meter-fill" style={{ width: `${Math.min(100, ((Number(profile.intensity) || 1) / 5) * 100)}%` }} />
+            <div className="training-profile-body">
+              <div className="training-profile-metrics">
+                <div className="training-metric-item">
+                  <div className="training-metric-meta">
+                    <span className="training-metric-icon calendar" aria-hidden="true"><IconCalendar /></span>
+                    <span className="training-metric-label">Days per week</span>
+                  </div>
+                  <span className="training-metric-value">{profile.days_per_week}</span>
+                </div>
+                <div className="training-metric-item">
+                  <div className="training-metric-meta">
+                    <span className="training-metric-icon flame" aria-hidden="true"><IconFlame /></span>
+                    <span className="training-metric-label">Intensity level</span>
+                  </div>
+                  <span className="training-metric-value">{formattedIntensity} / 5</span>
+                </div>
+
+                <div className={`training-status ${hasInjuries ? 'warning' : 'safe'}`}>
+                  <p className="training-status-main">
+                    <span className="training-status-meta">
+                      <span className={`training-metric-icon training-status-icon ${hasInjuries ? 'warning' : 'safe'}`} aria-hidden="true">
+                        {hasInjuries ? <IconAlertTriangle /> : <IconShieldCheck />}
+                      </span>
+                      <span className="training-status-title">Injury filters</span>
+                    </span>
+                    <span className={`training-status-value ${hasInjuries ? 'warning' : 'safe'}`}>
+                      {hasInjuries ? `${injuryList.length}` : 'None'}
+                    </span>
+                  </p>
+                  {hasInjuries && (
+                    <p className="training-status-detail training-status-detail-warning">
+                      Avoid loading: {injuryList.map((injury) => toTitleCase(injury)).join(', ')}
+                    </p>
+                  )}
+                </div>
               </div>
-              <p><span className="profile-icon">🛡️</span><strong> Injuries:</strong> {(profile.injury_muscles || []).join(', ') || 'None'}</p>
+              
+              <div className="training-card-actions">
+                <button
+                  type="button"
+                  className="btn training-edit-btn"
+                  onClick={toggleProfileEdit}
+                >
+                  <span className="training-edit-btn-icon" aria-hidden="true"><IconEdit /></span>
+                  Edit
+                </button>
+              </div>
             </div>
           ) : (
             <div className="wizard-grid">
-              <p className="wizard-label">Complete setup to generate reliable plans</p>
-              <div className="wizard-steps">
-                {ONBOARDING_STEPS.map((step, idx) => (
-                  <div key={step} className="wizard-step">
-                    <span className="wizard-dot">{idx + 1}</span> {step}
-                  </div>
-                ))}
-              </div>
-
               <label>Days / Week</label>
-              <select
-                value={onboardingDraft.days}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, days: Number(e.target.value) }))}
-              >
-                {[2, 3, 4, 5, 6, 7].map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
+              <div className="day-select" ref={daySelectRef}>
+                <button
+                  type="button"
+                  className="day-select-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={daysMenuOpen}
+                  onClick={() => setDaysMenuOpen((v) => !v)}
+                >
+                  <span>{onboardingDraft.days}</span>
+                  <span className="day-select-chevron" aria-hidden="true">▾</span>
+                </button>
+                {daysMenuOpen && (
+                  <div className="day-select-menu" role="listbox" aria-label="Days per week">
+                    {[2, 3, 4, 5, 6, 7].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        role="option"
+                        aria-selected={onboardingDraft.days === d}
+                        className={`day-select-option ${onboardingDraft.days === d ? 'selected' : ''}`}
+                        onClick={() => {
+                          setOnboardingDraft((p) => ({ ...p, days: d }))
+                          setDaysMenuOpen(false)
+                        }}
+                      >
+                        <span className="day-select-option-check" aria-hidden="true">{onboardingDraft.days === d ? '✓' : ''}</span>
+                        <span>{d}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <label>Intensity ({onboardingDraft.intensity})</label>
               <input
                 type="range"
                 min={1}
                 max={5}
-                step={0.5}
+                step={1}
                 value={onboardingDraft.intensity}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: Number(e.target.value) }))}
+                onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: normalizeIntensityValue(e.target.value, p.intensity) }))}
               />
 
               <label>Injury filters</label>
@@ -941,7 +1062,16 @@ export default function App() {
                 </div>
               </div>
 
-              <button type="button" className="btn btn-primary" onClick={completeOnboarding}>Save profile</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  await completeOnboarding()
+                  setProfileEdit(false)
+                }}
+              >
+                Save profile
+              </button>
             </div>
           )}
         </section>
@@ -993,43 +1123,6 @@ export default function App() {
                   </>
                 )
               })()}
-              {m.pendingProfileUpdate && (
-                <div className="detected-update-box">
-                  <p className="detected-update-label">Detected update</p>
-                  <div className="detected-update-chips">
-                    {(m.pendingProfileSummary || []).map((item) => (
-                      <span key={item} className="detected-update-chip">{item}</span>
-                    ))}
-                  </div>
-
-                  {m.pendingProfileStatus === 'pending' && (
-                    <div className="detected-update-actions">
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={() => applyDetectedProfileUpdate(idx, m.pendingProfileUpdate)}
-                      >
-                        Confirm
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => discardDetectedProfileUpdate(idx)}
-                      >
-                        Discard
-                      </button>
-                    </div>
-                  )}
-
-                  {m.pendingProfileStatus === 'applied' && (
-                    <p className="detected-update-state success">Saved to profile card.</p>
-                  )}
-                  {m.pendingProfileStatus === 'discarded' && (
-                    <p className="detected-update-state muted">Discarded. No profile changes saved.</p>
-                  )}
-                </div>
-              )}
-
             </div>
           ))}
 

@@ -1293,6 +1293,7 @@ def chat(body: ChatIn):
     user_id = _safe_user_id(body.user_id)
     prof = load_profile(user_id)
     stored = load_plan_for_user(user_id)
+    has_saved_plan = stored is not None
 
     plan_summary = body.plan_summary
     krr_summary = body.krr_summary
@@ -1302,6 +1303,10 @@ def chat(body: ChatIn):
             plan_summary = _summarize_saved_plan(saved_plan)
         if not krr_summary:
             krr_summary = _summarize_saved_krr(saved_krr)
+    else:
+        # Do not trust client-supplied plan/krr summaries when no server-side plan exists.
+        plan_summary = None
+        krr_summary = None
 
     profile_context = None
     if prof.get("onboarding_complete"):
@@ -1339,6 +1344,7 @@ def chat(body: ChatIn):
             krr_summary=krr_summary,
             user_id=user_id,
             profile_context=progress_context,
+            has_saved_plan=has_saved_plan,
         )
         append_chat_turn_to_profile(user_id, body.message, progress_reply)
         logger.info(
@@ -1366,6 +1372,7 @@ def chat(body: ChatIn):
                 krr_summary=krr_summary,
                 user_id=user_id,
                 profile_context=schedule_context,
+                has_saved_plan=has_saved_plan,
             )
             append_chat_turn_to_profile(user_id, body.message, schedule_reply)
             logger.info(
@@ -1385,6 +1392,7 @@ def chat(body: ChatIn):
         krr_summary=krr_summary,
         user_id=user_id,
         profile_context=combined_context,
+        has_saved_plan=has_saved_plan,
     )
     append_chat_turn_to_profile(user_id, body.message, response)
     logger.info(

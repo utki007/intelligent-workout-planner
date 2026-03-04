@@ -1,7 +1,43 @@
 {
   "injury_muscles": [],
-  "intensity": 1,
-  "chat_history": [],
-  "onboarding_complete": false,
+  "intensity": 5,
+  "chat_history": [
+    {
+      "ts": 1772598600,
+      "user": "I want to increase intensity to 5",
+      "assistant": "To increase the intensity of your workouts to level **5**, we can adjust your current exercises and possibly increase the weights or the number of repetitions. Here\u2019s how we can enhance your plan:\n\n### Suggested Adjustments\n\n- **Day 1**: \n  - Increase the weight for **dumbbell biceps curl** and **dumbbell seated shoulder press**.\n  - Add **dumbbell lying single extension** for triceps.\n\n- **Day 2**: \n  - Increase the weight for **dumbbell goblet squat** and **lever seated leg curl**.\n  - Add **band pull through** for glutes.\n\n- **Day 3**: \n  - Increase repetitions or duration for **air bike**.\n  - Add **reverse crunch** for core strength.\n\n- **Day 4**: \n  - Increase the weight for **dumbbell biceps curl**.\n  - Add **cable straight back seated row** for back strength.\n\n- **Day 5**: \n  - Increase the weight for **dumbbell shrug**.\n  - Add **farmers walk** for overall strength and endurance.\n\n### Next Steps\n- Update your profile to reflect the new intensity level.\n- Consider tracking your weights and reps to ensure you're progressively overloading.\n\nIf you need further customization or have any specific preferences, just let me know!"
+    },
+    {
+      "ts": 1772598850,
+      "user": "i want to increase intensity, i am an expert",
+      "assistant": "To accommodate your request for increased intensity, we can adjust your current plan. Since you have indicated that you are an expert, we can incorporate more challenging exercises and possibly increase the weights or repetitions.\n\n### Suggested Adjustments\n\n**Day 1: Upper Body**\n- **Replace**: Dumbbell biceps curl\n- **Add**: Dumbbell seated preacher curl\n- **Replace**: Dumbbell one arm kickback\n- **Add**: Dumbbell lying single extension\n- **Keep**: Dumbbell seated shoulder press (parallel grip)\n\n**Day 2: Lower Body**\n- **Keep**: Dumbbell goblet squat\n- **Add**: Dumbbell deadlift\n- **Replace**: Lever seated leg curl\n- **Add**: Dumbbell seated shoulder press (if not already included)\n\n**Day 3: Core**\n- **Keep**: Lying elbow to knee\n- **Add**: Reverse crunch\n- **Replace**: Band standing twisting crunch\n- **Add**: Hyperextension (on bench)\n\n**Day 4: Upper Body**\n- **Keep**: Cable pulldown\n- **Add**: Assisted standing chin-up\n- **Replace**: Dumbbell biceps curl\n- **Add**: Lever incline chest press\n\n**Day 5: Lower Body/Calves**\n- **Keep**: Bodyweight standing calf raise\n- **Add**: Donkey calf raise\n- **Keep**: Cable seated wide-grip row\n\n### Next Steps\n- **Weights**: Increase the weight"
+    },
+    {
+      "ts": 1772598863,
+      "user": "i am a novice",
+      "assistant": "Since you're a novice and have a solid weekly plan set up, you're already on the right track! Here\u2019s a quick overview of your current plan:\n\n### Current Weekly Plan\n- **Day 1**: \n  - Dumbbell biceps curl\n  - Dumbbell one arm kickback\n  - Dumbbell seated shoulder press (parallel grip)\n  \n- **Day 2**: \n  - Dumbbell goblet squat\n  - Lever seated leg curl\n  - Band squat\n  \n- **Day 3**: \n  - Lying elbow to knee\n  - Air bike\n  - Dead bug\n  - 45\u00b0 side bend\n  - Band standing twisting crunch\n  \n- **Day 4**: \n  - Cable pulldown\n  - Dumbbell biceps curl\n  - Barbell alternate biceps curl\n  \n- **Day 5**: \n  - Bodyweight standing calf raise\n  - Dumbbell shrug\n  - Cable seated wide-grip row\n\n### Tips for Novices\n- **Focus on Form**: Ensure you maintain good form to prevent injuries.\n- **Listen to Your Body**: If something feels off, consider adjusting the intensity or taking a break.\n- **Stay Hydrated**: Drink plenty of water before, during, and after workouts.\n\nIf you have any specific questions about your exercises or need adjustments, feel free to ask!"
+    },
+    {
+      "ts": 1772598882,
+      "user": "give me my plan",
+      "assistant": "Here's your current workout plan for the week:\n\n### **Day 1**\n- Dumbbell seated triceps extension\n- Dumbbell hammer curl v. 2\n- Dumbbell seated shoulder press\n- EZ barbell close-grip curl\n- Dumbbell over bench neutral wrist curl\n- Band concentration curl\n\n### **Day 2**\n- Reverse crunch\n- Air bike\n- Curl-up\n- Prisoner half sit-up (male)\n- Cross body crunch\n- Alternate heel touchers\n\n### **Day 3**\n- Dumbbell goblet squat\n- Dumbbell deadlift\n- Band pull through\n- Farmers walk\n- Split squats\n- Dumbbell supported squat\n\n### **Day 4**\n- Cable lateral pulldown with v-bar\n- Dumbbell one arm standing curl\n- Cable seated high row (v-bar)\n- Cable underhand pulldown\n- Exercise ball lower back stretch (pyramid)\n\nIf you need any adjustments or have specific recovery needs, let me know!"
+    },
+    {
+      "ts": 1772599109,
+      "user": "i am novice",
+      "assistant": "It looks like you're a novice and already have a workout plan in place. Since you have some injuries, it's important to stick to exercises that won't aggravate those areas.\n\n### Current Weekly Plan Overview\n- **Day 1**: Focuses on triceps and biceps.\n- **Day 2**: Core strengthening exercises.\n- **Day 3**: Lower body strength.\n- **Day 4**: Back and biceps focus.\n\nIf you need any adjustments or have specific goals in mind, let me know! We can also update your profile if you're looking for changes in your routine or recovery."
+    },
+    {
+      "ts": 1772599135,
+      "user": "generate my plan",
+      "assistant": "Since you already have a saved plan, let's review your current weekly schedule:\n\n### Current Weekly Plan Summary\n- **Day 1**: \n  - Dumbbell biceps curl squat\n  - Dumbbell lying triceps extension\n  - Push-up\n  - Lever bicep curl\n  - EZ barbell seated curls\n\n- **Day 2**: \n  - Dumbbell goblet squat\n  - Lever seated leg curl\n  - Band squat\n\n- **Day 3**: \n  - Air bike\n  - Butt-ups\n  - Crunch floor\n  - Band seated twist\n  - Band standing crunch\n\n- **Day 4**: \n  - Mountain climber\n  - Jump rope\n  - Walking on incline treadmill\n  - Walk elliptical cross trainer\n  - Swing 360\n\n- **Day 5**: \n  - Hamstring stretch\n  - Roller hip stretch\n  - Calf stretch with rope\n\n### Adjustments\nGiven your injuries (delts, levator scapulae, traps, upper back), the current plan avoids exercises that target these areas. If you need to adjust your plan for recovery or changes in intensity, please let me know!\n\nWould you like to make any specific changes or focus on different areas?"
+    },
+    {
+      "ts": 1772600257,
+      "user": "ok",
+      "assistant": "It looks like you have a saved workout plan! Here\u2019s a quick summary of your current week:\n\n### Current Weekly Plan\n- **Day 1**: \n  - Dumbbell biceps curl squat\n  - Dumbbell lying triceps extension\n  - Push-up\n  - Lever bicep curl\n  - EZ barbell seated curls\n\n- **Day 2**: \n  - Dumbbell goblet squat\n  - Lever seated leg curl\n  - Band squat\n\n- **Day 3**: \n  - Air bike\n  - Butt-ups\n  - Crunch floor\n  - Band seated twist\n  - Band standing crunch\n\n- **Day 4**: \n  - Mountain climber\n  - Jump rope\n  - Walking on incline treadmill\n  - Walk elliptical cross trainer\n  - Swing 360\n\n- **Day 5**: \n  - Hamstring stretch\n  - Roller hip stretch\n  - Calf stretch with rope\n\n### Notes\n- Your plan avoids exercises that target your injured deltoids, levator scapulae, traps, and upper back.\n- If you have any specific concerns or want to adjust your plan, let me know!"
+    }
+  ],
+  "onboarding_complete": true,
   "days_per_week": 5
 }
