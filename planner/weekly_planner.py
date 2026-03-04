@@ -434,7 +434,6 @@ def generate_weekly_plan(
     kb_evidence = _kb_evidence_for_llm(by_muscle, injury_muscles)
     llm_profile = {
         "experience_level": user_profile.get("experience_level", "beginner"),
-        "fitness_goals": user_profile.get("fitness_goals", ""),
         "days_per_week": days_per_week,
         "intensity": intensity,
         "injury_muscles": injury_muscles,

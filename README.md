@@ -98,7 +98,7 @@ python dev.py web --install
 
 1. Open **<http://localhost:5173>** in your browser.
    - The app runs in a **single generic profile** mode (no multi-user picker).
-   - Complete the profile card (goals, days/week, injuries, intensity).
+   - Complete the profile card (days/week, injuries, intensity).
    - Say **"Generate my plan"** or click **Generate plan**.
    - Expand any day card to see exercises and use **See Thinking** to view KRR + LLM reasoning.
    - Use the chat panel to ask follow-up questions (e.g. why a day is rest, how to adjust for injuries).

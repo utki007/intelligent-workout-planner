@@ -196,7 +196,7 @@ class LLM:
     ) -> str:
         """
         Respond as the workout agent to a free-form user message (e.g. chat).
-        Optionally include current plan, KRR context, and profile (goals, injuries) for informed answers.
+        Optionally include current plan, KRR context, and profile constraints for informed answers.
         """
         if not self._client or not self._model:
             logger.warning("llm.chat unavailable model_configured=%s", bool(self._model))
@@ -215,7 +215,7 @@ class LLM:
         system = (
             "You are a friendly workout planner agent. You help users understand their weekly plan, "
             "why certain exercises were chosen or skipped (e.g. injuries), and how to adjust. "
-            "Answer briefly and helpfully. If the user has already completed their profile (goals, days, injuries), "
+            "Answer briefly and helpfully. If the user has already completed their profile (days, injuries, intensity), "
             "do NOT ask them to provide it again — they've already set it up. If they don't have a plan yet, "
             "offer to generate one. If they mention recovery or changes, suggest updating their profile. "
             "If context is missing or ambiguous, ask one concise clarifying question instead of guessing. "
@@ -262,7 +262,6 @@ class LLM:
           "profile_updates": {
             "days_per_week": int(2-7) | null,
             "intensity": float(1-5) | null,
-            "fitness_goals": str | null,
             "injury_update": {
               "status": "injured" | "recovered" | "cleared" | "unknown",
               "operation": "add" | "remove" | "clear" | "none",
@@ -294,7 +293,6 @@ class LLM:
             "profile_updates must be null or an object with optional keys:\n"
             "- days_per_week (2-7)\n"
             "- intensity (1-5)\n"
-            "- fitness_goals (string)\n"
             "- injury_update (object with status, operation, muscles)\n"
             "injury_update.status must be one of: injured, recovered, cleared, unknown.\n"
             "injury_update.operation must be one of: add, remove, clear, none.\n"
@@ -302,7 +300,7 @@ class LLM:
             "Rules:\n"
             "- If the user asks for a workout split/plan with a specific day count (e.g. '2 day split'), "
             "intent=generate_plan and days_per_week=<that number>.\n"
-            "- If the user asks to change goals, injuries, intensity, or profile settings without asking to generate now, "
+            "- If the user asks to change injuries, intensity, or profile settings without asking to generate now, "
             "intent=profile_update.\n"
             "- Injury semantics:\n"
             "  - new pain/injury -> status=injured, operation=add.\n"
@@ -359,9 +357,6 @@ class LLM:
                         intensity = float(upd_intensity)
                         if 1.0 <= intensity <= 5.0:
                             updates_out["intensity"] = intensity
-                    upd_goals = updates_raw.get("fitness_goals")
-                    if isinstance(upd_goals, str) and upd_goals.strip():
-                        updates_out["fitness_goals"] = upd_goals.strip()
 
                     injury_raw = updates_raw.get("injury_update")
                     if isinstance(injury_raw, dict):
@@ -477,17 +472,16 @@ class LLM:
             "- Determine the best day split/themes yourself from kb_evidence + profile (do not assume preset split templates).\n"
             "- Determine exercises per day using user intensity: (baseline intensity guide: 1=2-3, 2=4, 3=4-5, 4=5-6, 5=6-7;).\n"
             "- Respect constraints.max_exercises_per_day and rep/set ranges.\n"
-            "- Keep plan coherent with profile goals and days_per_week.\n"
+            "- Keep plan coherent with profile constraints and days_per_week.\n"
             "- If repair_feedback exists, fix those exact issues in this output.\n"
             "- Do not output markdown. Output JSON only."
         )
 
         try:
             logger.info(
-                "llm.plan request user_id=%s days_per_week=%s goals=%s muscles=%s repair_feedback=%s",
+                "llm.plan request user_id=%s days_per_week=%s muscles=%s repair_feedback=%s",
                 user_id,
                 constraints.get("days_per_week"),
-                _clip(str(profile.get("fitness_goals", "")), 80),
                 len((kb_evidence.get("recommended_by_muscle") or {})),
                 bool(repair_feedback),
             )

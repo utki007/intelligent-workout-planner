@@ -20,11 +20,10 @@ const DEFAULT_PROFILE = {
   injury_muscles: [],
   intensity: 3,
   onboarding_complete: false,
-  fitness_goals: '',
   days_per_week: 5,
 }
 
-const ONBOARDING_STEPS = ['Goals', 'Days / Week', 'Injuries', 'Intensity']
+const ONBOARDING_STEPS = ['Days / Week', 'Injuries', 'Intensity']
 
 function dayNumber(label) {
   const m = String(label || '').match(/\d+/)
@@ -103,9 +102,6 @@ function summarizeProfileUpdates(updates) {
   if (Object.prototype.hasOwnProperty.call(updates, 'intensity')) {
     parts.push(`Intensity: ${updates.intensity}`)
   }
-  if (Object.prototype.hasOwnProperty.call(updates, 'fitness_goals')) {
-    parts.push(`Goals: ${updates.fitness_goals}`)
-  }
   return parts
 }
 
@@ -126,9 +122,6 @@ function normalizeIntentProfileUpdates(raw) {
   }
   if (typeof raw.intensity === 'number' && raw.intensity >= 1 && raw.intensity <= 5) {
     out.intensity = raw.intensity
-  }
-  if (typeof raw.fitness_goals === 'string' && raw.fitness_goals.trim()) {
-    out.fitness_goals = raw.fitness_goals.trim()
   }
   if (raw.injury_update && typeof raw.injury_update === 'object') {
     const injuryUpdate = {}
@@ -156,7 +149,7 @@ function normalizeIntentProfileUpdates(raw) {
 
 function toPersistedProfileUpdates(updates) {
   const out = {}
-  for (const key of ['injury_muscles', 'days_per_week', 'intensity', 'fitness_goals']) {
+  for (const key of ['injury_muscles', 'days_per_week', 'intensity']) {
     if (Object.prototype.hasOwnProperty.call(updates || {}, key)) {
       out[key] = updates[key]
     }
@@ -236,7 +229,6 @@ export default function App() {
   const toastTimersRef = useRef({})
 
   const [onboardingDraft, setOnboardingDraft] = useState({
-    goals: '',
     days: 5,
     injuries: [],
     intensity: 3,
@@ -353,7 +345,6 @@ export default function App() {
         }
         setProfile(next)
         setOnboardingDraft({
-          goals: next.fitness_goals || '',
           days: next.days_per_week ?? 5,
           injuries: next.injury_muscles || [],
           intensity: next.intensity ?? 3,
@@ -457,7 +448,6 @@ export default function App() {
     await saveProfile(persisted)
     setOnboardingDraft((prev) => ({
       ...prev,
-      goals: persisted.fitness_goals ?? prev.goals,
       days: persisted.days_per_week ?? prev.days,
       injuries: persisted.injury_muscles ?? prev.injuries,
       intensity: persisted.intensity ?? prev.intensity,
@@ -614,7 +604,6 @@ export default function App() {
           await saveProfile(persistableInferred)
           setOnboardingDraft((prev) => ({
             ...prev,
-            goals: persistableInferred.fitness_goals ?? prev.goals,
             days: persistableInferred.days_per_week ?? prev.days,
             injuries: persistableInferred.injury_muscles ?? prev.injuries,
             intensity: persistableInferred.intensity ?? prev.intensity,
@@ -837,7 +826,6 @@ export default function App() {
     }
     await saveProfile({
       onboarding_complete: true,
-      fitness_goals: onboardingDraft.goals,
       days_per_week: onboardingDraft.days,
       injury_muscles: onboardingDraft.injuries,
       intensity: onboardingDraft.intensity,
@@ -883,7 +871,6 @@ export default function App() {
 
           {!profileEdit ? (
             <div className="profile-grid">
-              <p><span className="profile-icon">🎯</span><strong> Goals:</strong> {profile.fitness_goals || 'Not set'}</p>
               <p><span className="profile-icon">📅</span><strong> Days/week:</strong> {profile.days_per_week}</p>
               <p><span className="profile-icon">🔥</span><strong> Intensity:</strong> {profile.intensity}</p>
               <div className="mini-meter">
@@ -901,13 +888,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-
-              <label>Goals</label>
-              <input
-                value={onboardingDraft.goals}
-                onChange={(e) => setOnboardingDraft((p) => ({ ...p, goals: e.target.value }))}
-                placeholder="e.g. build strength and reduce injury risk"
-              />
 
               <label>Days / Week</label>
               <select

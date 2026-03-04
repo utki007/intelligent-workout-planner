@@ -100,7 +100,6 @@ def load_profile(user_id: str) -> dict:
         "intensity": 3,
         "chat_history": [],
         "onboarding_complete": False,
-        "fitness_goals": "",
         "days_per_week": DEFAULT_DAYS_PER_WEEK,
     }
     if not os.path.isfile(path):
@@ -114,7 +113,6 @@ def load_profile(user_id: str) -> dict:
             "intensity": data.get("intensity", 3),
             "chat_history": data.get("chat_history", []),
             "onboarding_complete": data.get("onboarding_complete", False),
-            "fitness_goals": data.get("fitness_goals", ""),
             "days_per_week": clamp_days_per_week(data.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         }
         logger.debug(
@@ -135,7 +133,6 @@ def save_profile(
     injury_muscles: list[str] | None = None,
     intensity: float | None = None,
     onboarding_complete: bool | None = None,
-    fitness_goals: str | None = None,
     days_per_week: int | None = None,
 ) -> None:
     """Update and persist profile. Merges with existing."""
@@ -147,8 +144,6 @@ def save_profile(
         prof["intensity"] = max(1, min(5, float(intensity)))
     if onboarding_complete is not None:
         prof["onboarding_complete"] = bool(onboarding_complete)
-    if fitness_goals is not None:
-        prof["fitness_goals"] = str(fitness_goals).strip()
     if days_per_week is not None:
         prof["days_per_week"] = clamp_days_per_week(days_per_week)
     path = _profile_store_path(user_id)
@@ -156,13 +151,12 @@ def save_profile(
     with open(path, "w") as f:
         json.dump(prof, f, indent=2)
     logger.info(
-        "profile.save user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s goals_set=%s",
+        "profile.save user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s",
         user_id,
         prof.get("onboarding_complete"),
         prof.get("days_per_week"),
         prof.get("intensity"),
         len(prof.get("injury_muscles", [])),
-        bool(prof.get("fitness_goals")),
     )
 
 
@@ -277,7 +271,6 @@ class IntentProfileUpdatesOut(BaseModel):
     injury_muscles: list[str] | None = None
     injury_update: IntentInjuryUpdateOut | None = None
     intensity: float | None = None
-    fitness_goals: str | None = None
     days_per_week: int | None = None
 
 
@@ -307,7 +300,6 @@ class ProfileUpdateIn(BaseModel):
     injury_muscles: list[str] | None = None
     intensity: float | None = None
     onboarding_complete: bool | None = None
-    fitness_goals: str | None = None
     days_per_week: int | None = None
 
 
@@ -354,7 +346,6 @@ def _build_user_profile_for_planner(user_id: str) -> tuple[dict, AgentGoals]:
         "injury_muscles": stored_profile.get("injury_muscles", []),
         "days_per_week": clamp_days_per_week(stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
-        "fitness_goals": stored_profile.get("fitness_goals", ""),
     }
     return user_profile, goals
 
@@ -469,7 +460,7 @@ def _heuristic_intent(message: str) -> tuple[str, int | None]:
         "make", "build", "create", "generate", "start", "give", "prepare",
     }
     profile_terms = {
-        "injury", "injuries", "intensity", "goal", "goals", "profile", "soreness", "recover",
+        "injury", "injuries", "intensity", "profile", "soreness", "recover",
     }
     profile_verbs = {
         "update", "change", "edit", "set", "adjust",
@@ -581,10 +572,6 @@ def _coerce_profile_updates_from_intent_payload(
         if 1.0 <= i <= 5.0:
             updates["intensity"] = i
 
-    goals = payload_updates.get("fitness_goals")
-    if isinstance(goals, str) and goals.strip():
-        updates["fitness_goals"] = goals.strip()
-
     # Injury update semantics
     current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
     injury_raw = payload_updates.get("injury_update")
@@ -647,12 +634,6 @@ def _heuristic_profile_updates(message: str, current_profile: dict) -> dict:
             updates["intensity"] = max(1.0, min(5.0, intensity))
         except (TypeError, ValueError):
             pass
-
-    goal_match = re.search(r"\b(goals?|goal)\s*(are|is|to)?\s*[:\-]?\s*(.+)$", text)
-    if goal_match and goal_match.group(3):
-        goals = goal_match.group(3).strip()
-        if len(goals) >= 4:
-            updates["fitness_goals"] = goals
 
     current_injuries = current_profile.get("injury_muscles", []) if isinstance(current_profile, dict) else []
     muscles = _extract_muscles_from_text(text)
@@ -873,7 +854,6 @@ def _structured_progress_facts(user_id: str, profile: dict) -> str:
 
     facts = {
         "query_type": "progress_lookup",
-        "fitness_goals": profile.get("fitness_goals") or "not set",
         "days_per_week": profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK),
         "injuries": profile.get("injury_muscles", []) or [],
         "latest_plan_days": total_days,
@@ -954,17 +934,15 @@ def update_profile(body: ProfileUpdateIn):
         injury_muscles=body.injury_muscles,
         intensity=body.intensity,
         onboarding_complete=body.onboarding_complete,
-        fitness_goals=body.fitness_goals,
         days_per_week=body.days_per_week,
     )
     logger.info(
-        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s goals_set=%s",
+        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s",
         body.user_id,
         body.onboarding_complete,
         body.days_per_week,
         body.intensity,
         None if body.injury_muscles is None else len(body.injury_muscles),
-        bool((body.fitness_goals or "").strip()) if body.fitness_goals is not None else None,
     )
     return {"ok": True}
 
@@ -1128,7 +1106,6 @@ def generate_plan(profile: ProfileIn):
         # Respect preferred training frequency unless an override was explicitly requested
         "days_per_week": clamp_days_per_week(requested_days or stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
-        "fitness_goals": stored_profile.get("fitness_goals", ""),
     }
     plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = _run_stateless_plan_cycle(
         user_id, df, user_profile, goals
@@ -1328,7 +1305,7 @@ def chat(body: ChatIn):
 
     profile_context = None
     if prof.get("onboarding_complete"):
-        profile_context = f"User profile: Goals={prof.get('fitness_goals', '')}, Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
+        profile_context = f"User profile: Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
 
     kb_context = None
     try:
