@@ -27,5 +27,5 @@ web/dist/
 web/.vite/
 
 # Data artifacts
-data/agent_state_*.json
 data/plan_*.json
+data/profile_*.json

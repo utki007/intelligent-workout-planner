@@ -253,6 +253,15 @@ function IconEdit() {
   )
 }
 
+function IconSearch() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="11" cy="11" r="6" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m16 16 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -296,6 +305,7 @@ export default function App() {
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
   const daySelectRef = useRef(null)
+  const dayTabRefs = useRef({})
 
   useEffect(() => {
     let cancelled = false
@@ -433,6 +443,22 @@ export default function App() {
   }, [userId])
 
   const dayLabels = useMemo(() => sortedDayLabelsFromPlan(activePlan?.plan || {}), [activePlan])
+
+  const handleDayTabKeyDown = (event, day) => {
+    if (!dayLabels.length) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+
+    const currentIndex = dayLabels.indexOf(day)
+    if (currentIndex < 0) return
+
+    const step = event.key === 'ArrowRight' ? 1 : -1
+    const nextIndex = (currentIndex + step + dayLabels.length) % dayLabels.length
+    const nextDay = dayLabels[nextIndex]
+
+    setSelectedDay(nextDay)
+    dayTabRefs.current[nextDay]?.focus()
+  }
 
   useEffect(() => {
     if (!selectedDay && dayLabels.length) setSelectedDay(dayLabels[0])
@@ -762,29 +788,6 @@ export default function App() {
       pushToast('success', payload.message)
     } else {
       pushToast('success', 'Action completed successfully.')
-    }
-  }
-
-  const regenerateDay = async () => {
-    if (!selectedDay) return
-    const id = (userId || '').trim()
-    if (!id) return
-    setChatLoading(true)
-    try {
-      const res = await fetch(`${API}/plan/day/regenerate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: id, day: selectedDay }),
-      })
-      const requestId = res.headers.get('X-Request-ID')
-      if (requestId) setLastRequestId(requestId)
-      if (!res.ok) throw new Error(await res.text())
-      const payload = await res.json()
-      applyDayActionResult(payload)
-    } catch (e) {
-      pushToast('error', `Regeneration failed: ${e.message || 'Unknown error'}`)
-    } finally {
-      setChatLoading(false)
     }
   }
 
@@ -1164,11 +1167,13 @@ export default function App() {
         {DEV_MODE && lastRequestId && <p className="muted small">Request ID: {lastRequestId}</p>}
       </main>
 
-      <aside className="right-panel card">
-        <h2 className="panel-title">Weekly Plan View</h2>
-        <p className="panel-subtitle">Inspect each day, then explain or regenerate if needed.</p>
-
+      <aside className="right-panel card weekly-plan-panel">
         {!activePlan ? (
+          <>
+          <div className="weekly-plan-header">
+            <h2 className="panel-title">Weekly Plan View</h2>
+            <p className="panel-subtitle">Select a day tab to inspect or explain.</p>
+          </div>
           <div className="empty-plan">
             <div className="empty-plan-graphic" aria-hidden>
               <span />
@@ -1178,53 +1183,90 @@ export default function App() {
             <p className="empty-plan-title">No plan generated yet</p>
             <p className="muted">Ask in chat: “Give me my plan” to populate the weekly schedule.</p>
           </div>
+          </>
         ) : (
           <>
-            <div className="tabs">
+            <div className="weekly-plan-header weekly-plan-header-attached">
+              <h2 className="panel-title">Weekly Plan View</h2>
+              <p className="panel-subtitle">Select a day tab to inspect or explain.</p>
+            <div className="tabs-shell">
+              <div className="tabs" role="tablist" aria-label="Weekly day tabs">
               {dayLabels.map((d) => (
                 <button
                   key={d}
                   type="button"
+                  role="tab"
+                  aria-selected={selectedDay === d}
+                  tabIndex={selectedDay === d ? 0 : -1}
                   className={`tab ${selectedDay === d ? 'tab-active' : ''}`}
                   onClick={() => setSelectedDay(d)}
+                  onKeyDown={(event) => handleDayTabKeyDown(event, d)}
+                  ref={(node) => {
+                    if (node) dayTabRefs.current[d] = node
+                    else delete dayTabRefs.current[d]
+                  }}
                 >
-                  <span>{formatDayLabel(d)}</span>
-                  <small>{activePlan?.day_themes?.[d] || 'Theme'}</small>
+                  <span className="tab-day-label">{formatDayLabel(d)}</span>
                 </button>
               ))}
+              </div>
+            </div>
             </div>
 
-            <div className="day-view animate-in">
-              <h3>{(activePlan.day_themes && activePlan.day_themes[selectedDay]) || formatDayLabel(selectedDay)}</h3>
+            <div className="day-view day-view-attached animate-in">
+              <div className="day-title-row">
+                <h3>{(activePlan.day_themes && activePlan.day_themes[selectedDay]) || formatDayLabel(selectedDay)}</h3>
+              </div>
               <div className="day-insights">
-                <div className="focus-badges">
-                  {selectedDayInsights.focusMuscles.map((muscle) => (
-                    <span key={muscle} className="focus-badge">{muscle}</span>
-                  ))}
+                <div className="day-focus-box" role="group" aria-label="Day focus">
+                  <span className="day-focus-label">Focus</span>
+                  <span className="day-focus-value">
+                    {selectedDayInsights.focusMuscles.length === 0
+                      ? 'Full Body'
+                      : selectedDayInsights.focusMuscles.map((muscle) => toTitleCase(muscle)).join(' • ')}
+                  </span>
                 </div>
-                <div className="day-metrics-inline">
-                  <span><strong>Volume:</strong> {selectedDayInsights.totalSets} sets</span>
-                  <span><strong>Recovery:</strong> {selectedDayInsights.recoveryLoad}</span>
-                  <span><strong>Time:</strong> {selectedDayInsights.estMinutes} min</span>
+                <div className="day-metrics-grid" role="group" aria-label="Day summary metrics">
+                  <div className="day-metric-card">
+                    <span className="day-metric-label">Volume</span>
+                    <span className="day-metric-value">{selectedDayInsights.totalSets} sets</span>
+                  </div>
+                  <div className="day-metric-card">
+                    <span className="day-metric-label">Recovery</span>
+                    <span className="day-metric-value">{selectedDayInsights.recoveryLoad}</span>
+                  </div>
+                  <div className="day-metric-card">
+                    <span className="day-metric-label">Time</span>
+                    <span className="day-metric-value">{selectedDayInsights.estMinutes} min</span>
+                  </div>
                 </div>
               </div>
 
-              <ol className="exercise-list">
-                {selectedDayExercises.length === 0 && <li className="exercise-item muted">Rest Day</li>}
+              <div className="exercise-table" role="table" aria-label="Day exercise prescriptions">
+                <div className="exercise-table-head" role="row">
+                  <span className="exercise-head-cell">Exercise</span>
+                  <span className="exercise-head-cell exercise-head-cell-rx">Prescription</span>
+                </div>
+                <ol className="exercise-list">
+                {selectedDayExercises.length === 0 && (
+                  <li className="exercise-item">
+                    <p className="exercise-name muted">Rest Day</p>
+                    <p className="exercise-prescription muted">—</p>
+                  </li>
+                )}
                 {selectedDayExercises.map((ex, idx) => (
                   <li key={`${ex.name}-${idx}`} className="exercise-item">
                     <p className="exercise-name">{toTitleCase(ex.name)}</p>
                     <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
                   </li>
                 ))}
-              </ol>
+                </ol>
+              </div>
 
-              <div className="day-actions row gap wrap">
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => openExplanationDrawer(selectedDay)}>
-                  🔍 Explain Day
-                </button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>
-                  ♻️ Regenerate Day Plan
+              <div className="training-card-actions day-actions">
+                <button type="button" className="btn training-edit-btn" onClick={() => openExplanationDrawer(selectedDay)}>
+                  <span className="training-edit-btn-icon" aria-hidden="true"><IconSearch /></span>
+                  <span>Explain Day</span>
                 </button>
               </div>
             </div>
