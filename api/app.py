@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.agent_state import AgentGoals, AgentState
+from agent.decision_policy import PlanEvaluation
 from agent.krr import (
     JOINT_ALIASES,
     JOINT_MUSCLE_MAP,
@@ -35,7 +36,6 @@ from agent.krr import (
     query_recommended,
 )
 from agent.llm import LLM
-from agent.mcp import run_plan_cycle
 from planner.constraints import (
     DEFAULT_DAYS_PER_WEEK,
     MAX_DAYS_PER_WEEK,
@@ -43,6 +43,7 @@ from planner.constraints import (
     clamp_days_per_week,
     normalize_requested_days,
 )
+from planner.weekly_planner import generate_weekly_plan
 
 
 _LOG_LEVEL = os.environ.get("WORKOUT_LOG_LEVEL", "INFO").upper()
@@ -364,6 +365,57 @@ def _require_stored_plan(user_id: str) -> tuple[dict, dict]:
     if not stored:
         raise HTTPException(status_code=404, detail="No plan found for this user. Generate a plan first.")
     return stored
+
+
+def _enforce_injury_safety(plan: dict[str, list[dict]], injury_muscles: list[str] | None) -> int:
+    forbidden = set(normalize_injury_muscles(injury_muscles or []))
+    if not forbidden:
+        return 0
+
+    removed = 0
+    for day, day_exercises in (plan or {}).items():
+        safe_exercises = []
+        for ex in day_exercises or []:
+            target = str(ex.get("target", "")).strip().lower()
+            if target and target in forbidden:
+                removed += 1
+                continue
+            safe_exercises.append(ex)
+        plan[day] = safe_exercises
+    return removed
+
+
+def _run_stateless_plan_cycle(
+    user_id: str,
+    exercises_df: pd.DataFrame,
+    user_profile: dict,
+    goals: AgentGoals,
+) -> tuple[dict, bool, list[str], dict, dict, dict]:
+    transient_state = AgentState(user_id=user_id)
+    plan, krr_reasoning, day_themes, day_theme_muscles = generate_weekly_plan(
+        user_id=user_id,
+        user_profile=user_profile,
+        exercises_df=exercises_df,
+        state=transient_state,
+        goals=goals,
+    )
+
+    evaluation = PlanEvaluation(goals)
+    evaluation_ok, suggestions = evaluation.evaluate(plan)
+
+    if not evaluation_ok and suggestions:
+        for day_exercises in plan.values():
+            for ex in day_exercises:
+                target = str(ex.get("target", "")).strip().lower()
+                if target and int(ex.get("sets", 0)) > 2:
+                    ex["sets"] = max(2, int(ex["sets"]) - 1)
+        evaluation_ok, suggestions = evaluation.evaluate(plan)
+
+    removed_count = _enforce_injury_safety(plan, user_profile.get("injury_muscles") if isinstance(user_profile, dict) else None)
+    if removed_count:
+        logger.warning("plan.safety removed_injured_exercises=%s user_id=%s", removed_count, user_id)
+
+    return plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles
 
 
 def resolve_intent(message: str) -> dict:
@@ -819,11 +871,6 @@ def _structured_progress_facts(user_id: str, profile: dict) -> str:
     total_days = len(plan)
     total_exercises = sum(len(day or []) for day in plan.values()) if plan else 0
 
-    state = AgentState.load(user_id)
-    tracked_muscles = 0
-    if state:
-        tracked_muscles = len(set(list((state.soreness_per_muscle or {}).keys()) + list((state.weekly_volume_per_muscle or {}).keys())))
-
     facts = {
         "query_type": "progress_lookup",
         "fitness_goals": profile.get("fitness_goals") or "not set",
@@ -831,7 +878,6 @@ def _structured_progress_facts(user_id: str, profile: dict) -> str:
         "injuries": profile.get("injury_muscles", []) or [],
         "latest_plan_days": total_days,
         "latest_plan_exercises": total_exercises,
-        "tracked_muscles": tracked_muscles,
     }
     return json.dumps(facts, ensure_ascii=False)
 
@@ -872,21 +918,15 @@ def health():
 
 @app.get("/api/profile")
 def get_profile(user_id: str = Query(..., description="User ID")):
-    """Return saved profile (onboarding + constraints), merged with agent state."""
+    """Return saved profile (onboarding + constraints)."""
     user_id = _safe_user_id(user_id)
     prof = load_profile(user_id)
-    # Also include agent state (soreness, volume) if exists
-    state = AgentState.load(user_id)
-    if state:
-        prof["soreness_per_muscle"] = state.soreness_per_muscle
-        prof["weekly_volume_per_muscle"] = state.weekly_volume_per_muscle
     logger.info(
-        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s has_state=%s",
+        "profile.get user_id=%s onboarding=%s days_per_week=%s injuries=%s",
         user_id,
         prof.get("onboarding_complete"),
         prof.get("days_per_week"),
         len(prof.get("injury_muscles", [])),
-        state is not None,
     )
     return prof
 
@@ -1016,33 +1056,16 @@ def detect_intent(body: IntentIn):
 
 @app.get("/api/db")
 def get_db():
-    """Return what's stored: exercises from exercises_db.xlsx and saved user states from data/."""
-    import glob
+    """Return what's stored: exercises from exercises_db.xlsx."""
     exercises = []
     try:
         df = get_exercises_df()
         exercises = df[["name", "target", "difficulty"]].fillna("").astype(str).to_dict("records")
     except Exception:
         pass
-    user_states = []
-    try:
-        for path in glob.glob(os.path.join(DATA_DIR, "agent_state_*.json")):
-            name = os.path.basename(path)
-            user_id = name.replace("agent_state_", "").replace(".json", "")
-            with open(path) as f:
-                data = json.load(f)
-            user_states.append({
-                "user_id": user_id,
-                "soreness_per_muscle": data.get("soreness_per_muscle", {}),
-                "weekly_volume_per_muscle": data.get("weekly_volume_per_muscle", {}),
-                "missed_sessions": data.get("missed_sessions", []),
-            })
-    except Exception:
-        pass
     return {
         "exercises": exercises,
-        "user_states": user_states,
-        "source": "data/exercises_db.xlsx and data/agent_state_*.json",
+        "source": "data/exercises_db.xlsx",
     }
 
 
@@ -1107,8 +1130,8 @@ def generate_plan(profile: ProfileIn):
         "intensity": intensity,
         "fitness_goals": stored_profile.get("fitness_goals", ""),
     }
-    plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = run_plan_cycle(
-        user_id, df, user_profile, goals=goals
+    plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = _run_stateless_plan_cycle(
+        user_id, df, user_profile, goals
     )
     total_exercises = sum(len(v or []) for v in plan.values())
     logger.info(
@@ -1141,11 +1164,11 @@ def regenerate_plan_day(body: DayActionIn):
     try:
         df = get_exercises_df()
         user_profile, goals = _build_user_profile_for_planner(user_id)
-        full_plan, _, _, full_krr, day_themes, day_theme_muscles = run_plan_cycle(
+        full_plan, _, _, full_krr, day_themes, day_theme_muscles = _run_stateless_plan_cycle(
             user_id,
             df,
             user_profile,
-            goals=goals,
+            goals,
         )
     except HTTPException:
         raise

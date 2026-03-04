@@ -22,8 +22,6 @@ const DEFAULT_PROFILE = {
   onboarding_complete: false,
   fitness_goals: '',
   days_per_week: 5,
-  soreness_per_muscle: {},
-  weekly_volume_per_muscle: {},
 }
 
 const ONBOARDING_STEPS = ['Goals', 'Days / Week', 'Injuries', 'Intensity']
@@ -352,8 +350,6 @@ export default function App() {
         const next = {
           ...DEFAULT_PROFILE,
           ...p,
-          soreness_per_muscle: p.soreness_per_muscle || {},
-          weekly_volume_per_muscle: p.weekly_volume_per_muscle || {},
         }
         setProfile(next)
         setOnboardingDraft({
@@ -365,21 +361,6 @@ export default function App() {
       })
       .catch(() => setProfile(DEFAULT_PROFILE))
   }, [userId])
-
-  const stateRows = useMemo(() => {
-    const soreness = profile.soreness_per_muscle || {}
-    const volume = profile.weekly_volume_per_muscle || {}
-    const muscles = Array.from(new Set([...Object.keys(soreness), ...Object.keys(volume)])).sort()
-    const cap = Math.max(12, Math.min(28, Math.round(4 * (profile.intensity ?? 3) + 8)))
-    return {
-      cap,
-      rows: muscles.map((muscle) => ({
-        muscle,
-        soreness: Number(soreness[muscle] ?? 0),
-        volume: Number(volume[muscle] ?? 0),
-      })),
-    }
-  }, [profile])
 
   const dayLabels = useMemo(() => sortedDayLabelsFromPlan(activePlan?.plan || {}), [activePlan])
 
@@ -416,34 +397,6 @@ export default function App() {
       focusMuscles: (fromTheme.length ? fromTheme : fromExercises).slice(0, 4),
     }
   }, [activePlan, selectedDay, selectedDayExercises])
-
-  const topSorenessSignals = useMemo(() => {
-    return Object.entries(profile.soreness_per_muscle || {})
-      .map(([muscle, score]) => ({ muscle, score: Number(score || 0) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 2)
-  }, [profile.soreness_per_muscle])
-
-  const projectedStateRows = useMemo(() => {
-    if (stateRows.rows.length > 0 || !activePlan?.plan) return []
-    const totals = {}
-    Object.values(activePlan.plan || {}).forEach((dayExercises) => {
-      ;(dayExercises || []).forEach((ex) => {
-        const target = String(ex.target || '').trim().toLowerCase()
-        if (!target) return
-        totals[target] = (totals[target] || 0) + Number(ex.sets || 0)
-      })
-    })
-    return Object.entries(totals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([muscle, volume]) => ({
-        muscle,
-        soreness: 0,
-        volume: Number(volume),
-      }))
-  }, [activePlan, stateRows.rows.length])
 
   const normalizedDraftInjuries = useMemo(
     () => Array.from(new Set((onboardingDraft.injuries || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean))),
@@ -1013,32 +966,6 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel-section">
-          <h3>Current Training State</h3>
-          <p className="section-hint">Live or projected load by muscle group.</p>
-          {stateRows.rows.length === 0 && projectedStateRows.length === 0 ? (
-            <p className="muted">No tracked muscle state yet. Generate a plan to start tracking.</p>
-          ) : (
-            <div className="state-list">
-              {stateRows.rows.length === 0 && projectedStateRows.length > 0 && (
-                <p className="muted small">Projected muscle load from current plan</p>
-              )}
-              {(stateRows.rows.length ? stateRows.rows : projectedStateRows).map((row) => (
-                <div key={row.muscle} className="state-row">
-                  <div className="state-row-top">
-                    <span>{row.muscle}</span>
-                    <span className={`heat-pill ${sorenessClass(row.soreness)}`}>soreness {row.soreness || 0}</span>
-                  </div>
-                  <div className="volume-track">
-                    <div className="volume-fill" style={{ width: `${Math.min(100, (row.volume / stateRows.cap) * 100)}%` }} />
-                  </div>
-                  <span className="muted small">{row.volume} / {stateRows.cap}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
       </aside>
 
       <main className="center-panel card">
@@ -1298,11 +1225,6 @@ export default function App() {
                   <p>✓ Adjusted workload using soreness and weekly volume state.</p>
                   <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
                   <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
-                  {topSorenessSignals.length > 0 && (
-                    <p className="muted small">
-                      Top soreness signals: {topSorenessSignals.map((s) => `${s.muscle} (${s.score.toFixed(1)})`).join(', ')}
-                    </p>
-                  )}
                 </div>
               )}
             </div>
