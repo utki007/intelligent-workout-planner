@@ -15,7 +15,13 @@ import pandas as pd
 
 from agent.agent_state import AgentGoals, AgentState
 from agent.decision_policy import DecisionPolicy
-from agent.krr import get_krr_reasoning, load_kb, normalize_injury_muscles, query_recommended
+from agent.krr import (
+    get_krr_reasoning,
+    load_kb,
+    normalize_equipment_preferences,
+    normalize_injury_muscles,
+    query_recommended,
+)
 from agent.llm import LLM
 from planner.constraints import (
     MAX_EXERCISES_PER_DAY,
@@ -155,6 +161,7 @@ def _build_exercise_catalog(
 def _kb_evidence_for_llm(
     by_muscle: dict[str, list[str]],
     injury_muscles: list[str],
+    preferred_equipment: list[str],
 ) -> dict[str, Any]:
     """
     Compact KB evidence payload for LLM grounding.
@@ -168,9 +175,13 @@ def _kb_evidence_for_llm(
     return {
         "rules": [
             "forbidden(User, Exercise) <- trains_muscle(Exercise, M) and injured_muscle(User, M)",
-            "recommended(User, Exercise) <- is_exercise(Exercise) and difficulty=beginner and not forbidden(User, Exercise)",
+            "equipment_allowed(User, Exercise) <- preferred_equipment(User, Eq) and uses_equipment(Exercise, Eq)",
+            "equipment_allowed(User, Exercise) <- uses_equipment(Exercise, body weight)",
+            "recommended(User, Exercise) <- is_exercise(Exercise) and difficulty=beginner and not forbidden(User, Exercise)"
+            " and (no preferred equipment or equipment_allowed(User, Exercise))",
         ],
         "injury_muscles": sorted({str(m).strip().lower() for m in injury_muscles if str(m).strip()}),
+        "preferred_equipment": sorted({str(eq).strip().lower() for eq in preferred_equipment if str(eq).strip()}),
         "recommended_by_muscle": limited,
     }
 
@@ -410,6 +421,9 @@ def generate_weekly_plan(
     """
     del modifications  # not currently used for LLM generation
     injury_muscles = user_profile.get("injury_muscles") or []
+    preferred_equipment = sorted(
+        normalize_equipment_preferences(user_profile.get("equipment_preferences") or [])
+    )
     forbidden_muscles = normalize_injury_muscles(injury_muscles)
     days_per_week = clamp_days_per_week(user_profile.get("days_per_week"))
     try:
@@ -418,7 +432,12 @@ def generate_weekly_plan(
         intensity = 3.0
     intensity = max(1.0, min(5.0, intensity))
 
-    load_kb(exercises_df, user_id, injury_muscles)
+    load_kb(
+        exercises_df,
+        user_id,
+        injury_muscles,
+        equipment_preferences=preferred_equipment,
+    )
     recommended_all = query_recommended(user_id)
     policy = DecisionPolicy(state, goals)
     prescription = policy.get_prescription()
@@ -431,12 +450,13 @@ def generate_weekly_plan(
         len(by_muscle),
     )
 
-    kb_evidence = _kb_evidence_for_llm(by_muscle, injury_muscles)
+    kb_evidence = _kb_evidence_for_llm(by_muscle, injury_muscles, preferred_equipment)
     llm_profile = {
         "experience_level": user_profile.get("experience_level", "beginner"),
         "days_per_week": days_per_week,
         "intensity": intensity,
         "injury_muscles": injury_muscles,
+        "equipment_preferences": preferred_equipment,
     }
     llm_constraints = {
         "days_per_week": days_per_week,
@@ -455,6 +475,7 @@ def generate_weekly_plan(
             "5": [6, 7],
         },
         "high_recovery_muscles": sorted(_HIGH_RECOVERY_MUSCLES),
+        "preferred_equipment": preferred_equipment,
     }
 
     llm = LLM()

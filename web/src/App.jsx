@@ -16,8 +16,24 @@ const DEFAULT_JOINT_MUSCLE_MAP = {
   spine: ['upper back', 'lats', 'abs'],
 }
 
+const DEFAULT_EQUIPMENT_OPTIONS = [
+  'body weight',
+  'dumbbell',
+  'barbell',
+  'kettlebell',
+  'cable',
+  'band',
+  'resistance band',
+  'smith machine',
+  'leverage machine',
+  'stability ball',
+  'medicine ball',
+  'ez barbell',
+]
+
 const DEFAULT_PROFILE = {
   injury_muscles: [],
+  equipment_preferences: [],
   intensity: 3,
   onboarding_complete: false,
   days_per_week: 5,
@@ -94,6 +110,10 @@ function summarizeProfileUpdates(updates) {
     const injuries = updates.injury_muscles || []
     parts.push(injuries.length ? `Injuries: ${injuries.join(', ')}` : 'Injuries: none')
   }
+  if (Object.prototype.hasOwnProperty.call(updates, 'equipment_preferences')) {
+    const equipment = updates.equipment_preferences || []
+    parts.push(equipment.length ? `Equipment: ${equipment.join(', ')}` : 'Equipment: none')
+  }
   if (Object.prototype.hasOwnProperty.call(updates, 'days_per_week')) {
     parts.push(`Days/week: ${updates.days_per_week}`)
   }
@@ -110,6 +130,15 @@ function normalizeIntentProfileUpdates(raw) {
     out.injury_muscles = Array.from(
       new Set(
         raw.injury_muscles
+          .map((m) => String(m || '').trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    )
+  }
+  if (Array.isArray(raw.equipment_preferences)) {
+    out.equipment_preferences = Array.from(
+      new Set(
+        raw.equipment_preferences
           .map((m) => String(m || '').trim().toLowerCase())
           .filter(Boolean),
       ),
@@ -147,7 +176,7 @@ function normalizeIntentProfileUpdates(raw) {
 
 function toPersistedProfileUpdates(updates) {
   const out = {}
-  for (const key of ['injury_muscles', 'days_per_week', 'intensity']) {
+  for (const key of ['injury_muscles', 'equipment_preferences', 'days_per_week', 'intensity']) {
     if (Object.prototype.hasOwnProperty.call(updates || {}, key)) {
       out[key] = updates[key]
     }
@@ -225,6 +254,15 @@ function IconFlame() {
   )
 }
 
+function IconDumbbell() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5.5 9.5v5M7.5 8v8M16.5 8v8M18.5 9.5v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M7.5 12h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function IconShieldCheck() {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -297,14 +335,19 @@ export default function App() {
   const [onboardingDraft, setOnboardingDraft] = useState({
     days: 5,
     injuries: [],
+    equipment: [],
     intensity: 3,
   })
   const [daysMenuOpen, setDaysMenuOpen] = useState(false)
+  const [equipmentMenuOpen, setEquipmentMenuOpen] = useState(false)
+  const [equipmentSearch, setEquipmentSearch] = useState('')
   const [injuryMap, setInjuryMap] = useState(DEFAULT_JOINT_MUSCLE_MAP)
+  const [equipmentOptions, setEquipmentOptions] = useState(DEFAULT_EQUIPMENT_OPTIONS)
 
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
   const daySelectRef = useRef(null)
+  const equipmentSelectRef = useRef(null)
   const dayTabRefs = useRef({})
 
   useEffect(() => {
@@ -321,6 +364,28 @@ export default function App() {
       }
     }
     loadInjuryMap()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadEquipmentOptions = async () => {
+      try {
+        const res = await fetch(`${API}/equipment-options`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (cancelled) return
+        const next = Array.isArray(data?.equipment)
+          ? Array.from(new Set(data.equipment.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)))
+          : []
+        if (next.length) setEquipmentOptions(next)
+      } catch {
+        // Keep fallback list.
+      }
+    }
+    loadEquipmentOptions()
     return () => {
       cancelled = true
     }
@@ -408,7 +473,22 @@ export default function App() {
   }, [daysMenuOpen])
 
   useEffect(() => {
-    if (!profileEdit) setDaysMenuOpen(false)
+    if (!equipmentMenuOpen) return undefined
+    const onDocPointerDown = (event) => {
+      if (!equipmentSelectRef.current?.contains(event.target)) {
+        setEquipmentMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocPointerDown)
+    return () => document.removeEventListener('mousedown', onDocPointerDown)
+  }, [equipmentMenuOpen])
+
+  useEffect(() => {
+    if (!profileEdit) {
+      setDaysMenuOpen(false)
+      setEquipmentMenuOpen(false)
+      setEquipmentSearch('')
+    }
   }, [profileEdit])
 
   useEffect(() => {
@@ -436,6 +516,7 @@ export default function App() {
         setOnboardingDraft({
           days: next.days_per_week ?? 5,
           injuries: next.injury_muscles || [],
+          equipment: next.equipment_preferences || [],
           intensity: normalizedIntensity,
         })
       })
@@ -498,10 +579,18 @@ export default function App() {
     () => Array.from(new Set((onboardingDraft.injuries || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean))),
     [onboardingDraft.injuries],
   )
+  const normalizedDraftEquipment = useMemo(
+    () => Array.from(new Set((onboardingDraft.equipment || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean))),
+    [onboardingDraft.equipment],
+  )
 
   const selectedInjurySet = useMemo(
     () => new Set(normalizedDraftInjuries),
     [normalizedDraftInjuries],
+  )
+  const selectedEquipmentSet = useMemo(
+    () => new Set(normalizedDraftEquipment),
+    [normalizedDraftEquipment],
   )
 
   const jointOptions = useMemo(
@@ -513,6 +602,15 @@ export default function App() {
     () => uniqueMusclesFromJointMap(injuryMap, normalizedDraftInjuries),
     [injuryMap, normalizedDraftInjuries],
   )
+  const equipmentChipOptions = useMemo(
+    () => Array.from(new Set([...equipmentOptions, ...normalizedDraftEquipment])),
+    [equipmentOptions, normalizedDraftEquipment],
+  )
+  const filteredEquipmentOptions = useMemo(() => {
+    const query = String(equipmentSearch || '').trim().toLowerCase()
+    if (!query) return equipmentChipOptions
+    return equipmentChipOptions.filter((item) => item.includes(query))
+  }, [equipmentChipOptions, equipmentSearch])
 
   const statusText = chatLoading ? (chatActivity || '') : ''
 
@@ -679,6 +777,7 @@ export default function App() {
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
             injuries: persistableInferred.injury_muscles ?? prev.injuries,
+            equipment: persistableInferred.equipment_preferences ?? prev.equipment,
             intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
           }))
           pushToast('success', 'Applied detected profile updates before plan generation.')
@@ -717,6 +816,7 @@ export default function App() {
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
             injuries: persistableInferred.injury_muscles ?? prev.injuries,
+            equipment: persistableInferred.equipment_preferences ?? prev.equipment,
             intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
           }))
           pushToast('success', 'Profile updated.')
@@ -848,6 +948,17 @@ export default function App() {
     })
   }
 
+  const toggleEquipmentPreference = (equipment) => {
+    const eq = String(equipment || '').trim().toLowerCase()
+    if (!eq) return
+    setOnboardingDraft((prev) => {
+      const current = Array.from(new Set((prev.equipment || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)))
+      const exists = current.includes(eq)
+      const next = exists ? current.filter((x) => x !== eq) : [...current, eq]
+      return { ...prev, equipment: next }
+    })
+  }
+
   const toggleInjuryJoint = (joint) => {
     const j = String(joint || '').trim().toLowerCase()
     const mapped = (injuryMap?.[j] || []).map((m) => String(m || '').trim().toLowerCase()).filter(Boolean)
@@ -882,6 +993,7 @@ export default function App() {
       onboarding_complete: true,
       days_per_week: onboardingDraft.days,
       injury_muscles: onboardingDraft.injuries,
+      equipment_preferences: onboardingDraft.equipment,
       intensity: normalizeIntensityValue(onboardingDraft.intensity, 3),
     })
     pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
@@ -890,13 +1002,16 @@ export default function App() {
   const safeIntensity = normalizeIntensityValue(profile.intensity, 3)
   const formattedIntensity = String(safeIntensity)
   const injuryList = profile.injury_muscles || []
+  const equipmentList = profile.equipment_preferences || []
   const hasInjuries = injuryList.length > 0
+  const hasEquipmentPreferences = equipmentList.length > 0
 
   const toggleProfileEdit = () => {
     if (profileEdit) {
       setOnboardingDraft({
         days: profile.days_per_week ?? 5,
         injuries: profile.injury_muscles || [],
+        equipment: profile.equipment_preferences || [],
         intensity: normalizeIntensityValue(profile.intensity, 3),
       })
       setProfileEdit(false)
@@ -932,7 +1047,7 @@ export default function App() {
         <div className="section-head training-profile-head">
           <h2 className="panel-title">Training Profile</h2>
         </div>
-        <p className="panel-subtitle">Set training days, intensity, and injury filters.</p>
+        <p className="panel-subtitle">Set training days, intensity, injury filters, and equipment preferences.</p>
 
         <section className="panel-section training-profile-card">
 
@@ -969,6 +1084,25 @@ export default function App() {
                   {hasInjuries && (
                     <p className="training-status-detail training-status-detail-warning">
                       Avoid loading: {injuryList.map((injury) => toTitleCase(injury)).join(', ')}
+                    </p>
+                  )}
+                </div>
+
+                <div className={`training-status ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
+                  <p className="training-status-main">
+                    <span className="training-status-meta">
+                      <span className="training-metric-icon training-status-icon info" aria-hidden="true">
+                        <IconDumbbell />
+                      </span>
+                      <span className="training-status-title">Equipment preferences</span>
+                    </span>
+                    <span className={`training-status-value ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
+                      {hasEquipmentPreferences ? `${equipmentList.length}` : 'Any'}
+                    </span>
+                  </p>
+                  {hasEquipmentPreferences && (
+                    <p className="training-status-detail">
+                      Selected: {equipmentList.map((item) => toTitleCase(item)).join(', ')}
                     </p>
                   )}
                 </div>
@@ -1062,6 +1196,83 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                </div>
+              </div>
+
+              <label>Equipment preferences</label>
+              <div className="injury-filter-grid">
+                <div className="injury-filter-group">
+                  <p className="injury-filter-title">Choose available equipment</p>
+                  <div className="equipment-select" ref={equipmentSelectRef}>
+                    <button
+                      type="button"
+                      className="equipment-select-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded={equipmentMenuOpen}
+                      onClick={() => setEquipmentMenuOpen((open) => !open)}
+                    >
+                      <span>
+                        {normalizedDraftEquipment.length
+                          ? `${normalizedDraftEquipment.length} selected`
+                          : 'Select equipment'}
+                      </span>
+                      <span className="day-select-chevron" aria-hidden="true">▾</span>
+                    </button>
+
+                    {equipmentMenuOpen && (
+                      <div className="equipment-select-menu" role="listbox" aria-label="Equipment preferences">
+                        <input
+                          type="text"
+                          className="equipment-search-input"
+                          value={equipmentSearch}
+                          placeholder="Search equipment..."
+                          onChange={(e) => setEquipmentSearch(e.target.value)}
+                        />
+                        <div className="equipment-option-list">
+                          {filteredEquipmentOptions.length === 0 ? (
+                            <p className="equipment-empty">No equipment found.</p>
+                          ) : (
+                            filteredEquipmentOptions.map((equipment) => (
+                              <button
+                                key={equipment}
+                                type="button"
+                                role="option"
+                                aria-selected={selectedEquipmentSet.has(equipment)}
+                                className={`equipment-option ${selectedEquipmentSet.has(equipment) ? 'selected' : ''}`}
+                                onClick={() => toggleEquipmentPreference(equipment)}
+                              >
+                                <span className="day-select-option-check" aria-hidden="true">
+                                  {selectedEquipmentSet.has(equipment) ? '✓' : ''}
+                                </span>
+                                <span>{toTitleCase(equipment)}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="equipment-bubbles">
+                    {normalizedDraftEquipment.length === 0 ? (
+                      <p className="muted small">No equipment selected (any allowed).</p>
+                    ) : (
+                      normalizedDraftEquipment.map((equipment) => (
+                        <span key={equipment} className="equipment-bubble">
+                          <span>{toTitleCase(equipment)}</span>
+                          <button
+                            type="button"
+                            className="equipment-bubble-clear"
+                            aria-label={`Remove ${equipment}`}
+                            onClick={() => toggleEquipmentPreference(equipment)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  <p className="muted small">Leave empty to allow any equipment. You can also update this by chat.</p>
                 </div>
               </div>
 

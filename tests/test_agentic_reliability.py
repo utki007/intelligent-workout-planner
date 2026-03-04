@@ -43,6 +43,23 @@ class KRRRegressionTests(unittest.TestCase):
         self.assertNotIn("Leg Curl", recommended)
         self.assertIn("Biceps Curl", recommended)
 
+    def test_krr_filters_by_equipment_preference(self):
+        df = pd.DataFrame(
+            [
+                {"name": "Band Curl", "target": "biceps", "difficulty": "beginner", "equipment": "resistance band"},
+                {"name": "Cable Curl", "target": "biceps", "difficulty": "beginner", "equipment": "cable"},
+                {"name": "Barbell Curl", "target": "biceps", "difficulty": "beginner", "equipment": "barbell"},
+                {"name": "Bodyweight Chin-up Hold", "target": "biceps", "difficulty": "beginner", "equipment": "body weight"},
+            ]
+        )
+        user_id = "krr_equipment_user"
+        load_kb(df, user_id, [], equipment_preferences=["resistance band"])
+        recommended = set(query_recommended(user_id))
+        self.assertIn("Band Curl", recommended)
+        self.assertIn("Bodyweight Chin-up Hold", recommended)
+        self.assertNotIn("Cable Curl", recommended)
+        self.assertNotIn("Barbell Curl", recommended)
+
 
 class PolicyRegressionTests(unittest.TestCase):
     def test_policy_reduces_overtrained_muscle(self):
@@ -161,6 +178,43 @@ class PlannerRegressionTests(unittest.TestCase):
         for day_exercises in plan.values():
             # Intensity 4 should not collapse to 3/day when catalog is sufficient.
             self.assertGreaterEqual(len(day_exercises), 5)
+
+    @patch("planner.weekly_planner.LLM.build_weekly_plan")
+    def test_planner_respects_equipment_preference(self, mock_build):
+        mock_build.return_value = {"unexpected": "shape"}
+
+        df = pd.DataFrame(
+            [
+                {"name": "Dumbbell Curl", "target": "biceps", "difficulty": "beginner", "equipment": "dumbbell"},
+                {"name": "Cable Curl", "target": "biceps", "difficulty": "beginner", "equipment": "cable"},
+                {"name": "Dumbbell Press", "target": "pectorals", "difficulty": "beginner", "equipment": "dumbbell"},
+                {"name": "Machine Press", "target": "pectorals", "difficulty": "beginner", "equipment": "leverage machine"},
+            ]
+        )
+        state = AgentState(user_id="equipment_pref_user")
+        goals = AgentGoals()
+        profile = {
+            "user_id": "equipment_pref_user",
+            "name": "equipment_pref_user",
+            "experience_level": "beginner",
+            "injury_muscles": [],
+            "equipment_preferences": ["dumbbells"],
+            "days_per_week": 2,
+            "intensity": 3,
+            "fitness_goals": "build strength",
+        }
+
+        plan, _, _, _ = generate_weekly_plan("equipment_pref_user", profile, df, state, goals)
+
+        all_names = {
+            str(ex.get("name", "")).strip()
+            for day_exercises in plan.values()
+            for ex in day_exercises
+        }
+        self.assertIn("Dumbbell Curl", all_names)
+        self.assertIn("Dumbbell Press", all_names)
+        self.assertNotIn("Cable Curl", all_names)
+        self.assertNotIn("Machine Press", all_names)
 
 
 class MCPRegressionTests(unittest.TestCase):
