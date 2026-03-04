@@ -2,24 +2,7 @@
   "injury_muscles": [
     "pectorals"
   ],
-  "intensity": 4.0,
-  "feedback_history": [
-    {
-      "soreness": 3.0
-    },
-    {
-      "soreness": 4.0
-    },
-    {
-      "soreness": 3.0
-    },
-    {
-      "soreness": 5.0
-    },
-    {
-      "soreness": 3.0
-    }
-  ],
+  "intensity": 5,
   "chat_history": [
     {
       "ts": 1772509373,
@@ -30,9 +13,24 @@
       "ts": 1772580838,
       "user": "hi",
       "assistant": "Based on your profile, exercise DB, and KRR rules: Hello! How can I assist you today with your workout plan? If you have any questions or need adjustments, feel free to let me know!"
+    },
+    {
+      "ts": 1772582635,
+      "user": "hi",
+      "assistant": "Based on your profile, exercise DB, and KRR rules: Hello! How can I assist you with your workout plan today?"
+    },
+    {
+      "ts": 1772582651,
+      "user": "tell me which exercise I have to do today",
+      "assistant": "Based on your profile, exercise DB, and KRR rules: Today is Day 1 of your plan. You should complete the following exercises:\n\n1. Dumbbell biceps curl\n2. Dumbbell close grip press\n3. Dumbbell standing palms in press\n4. Cable standing row (v-bar)\n5. Dumbbell lying wide curl\n6. Lever hammer grip preacher curl\n\nMake sure to focus on your form and listen to your body, especially considering your pectoral injury. Enjoy your workout!"
+    },
+    {
+      "ts": 1772582786,
+      "user": "which shoes to wear to gym today",
+      "assistant": "Based on your profile, exercise DB, and KRR rules: It's best to wear comfortable athletic shoes that provide good support and traction. Look for shoes designed for cross-training or weightlifting, as they will help you maintain stability during your workouts. If you're doing more cardio, running shoes can also be a good option. Just make sure they fit well and are suitable for the type of exercises you plan to do!"
     }
   ],
   "onboarding_complete": true,
   "fitness_goals": "weight loss and muscle gain",
-  "days_per_week": 4
+  "days_per_week": 5
 }

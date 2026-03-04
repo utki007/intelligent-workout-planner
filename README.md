@@ -48,10 +48,28 @@ The code that reads these is in **`agent/llm.py`** (it uses `os.environ`; with `
 
 ## Run
 
+### Command hub (recommended)
+
+Use the unified launcher from project root:
+
+```bash
+python dev.py --help
+```
+
+Most common commands:
+
+```bash
+python dev.py setup --web   # install Python + web dependencies
+python dev.py api           # run FastAPI backend on 127.0.0.1:8000
+python dev.py web           # run React frontend (http://localhost:5173)
+python dev.py cli           # run CLI planner
+python dev.py test          # run tests
+```
+
 ### 1. CLI (from project root)
 
 ```bash
-python main.py
+python dev.py cli
 ```
 
 This creates/loads a default user (with one injury), generates a weekly plan (2–7 days depending on config/user), prints KRR reasoning per day and LLM explanations, then prompts for end-of-week soreness to update state for next week.
@@ -61,21 +79,20 @@ This creates/loads a default user (with one injury), generates a weekly plan (2�
 1. Start the Python API (from project root):
 
 ```bash
-python api.py
+python dev.py api
 ```
 
-Equivalent explicit command:
+Compatibility shortcuts still supported:
 
 ```bash
+python api.py
 uvicorn api.app:app --reload --port 8000
 ```
 
 2. In another terminal, install and run the React chat frontend:
 
 ```bash
-cd web
-npm install
-npm run dev
+python dev.py web --install
 ```
 
 3. Open **http://localhost:5173** in your browser.
@@ -85,9 +102,15 @@ npm run dev
    - Expand any day card to see exercises and use **See Thinking** to view KRR + LLM reasoning.
    - Use the chat panel to ask follow-up questions (e.g. why a day is rest, how to adjust for injuries).
 
-## Project Structure
+## Project Structure (clean map)
+
+For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 
 ```
+├── .vscode/
+│   └── tasks.json           # VS Code run tasks (backend, frontend, CLI, tests)
+├── api.py                   # backward-compatible API launcher (delegates to dev.py)
+├── dev.py                   # unified command hub (setup/api/web/cli/test)
 ├── data/
 │   ├── exercises_db.xlsx    # Exercise DB for all recommendations (name, target, difficulty)
 │   ├── agent_state_*.json   # Per-user state (soreness, volume, missed sessions)
@@ -104,13 +127,12 @@ npm run dev
 │   └── splits.json          # Legacy artifact (no longer used by planner runtime)
 ├── api/
 │   └── app.py               # FastAPI: /api/plan, /api/profile, /api/explanation, /api/feedback, /api/chat
-├── frontend/                # (legacy; Streamlit UI removed)
 ├── web/                     # Node.js (React + Vite) chat frontend
 │   ├── src/App.jsx
 │   └── package.json
 ├── scripts/
 │   └── create_exercises_xlsx.py
-├── main.py                  # Entry point
+├── main.py                  # CLI implementation entry point (used by dev.py cli)
 ├── requirements.txt
 └── README.md
 ```

@@ -18,7 +18,6 @@ const DEFAULT_JOINT_MUSCLE_MAP = {
 const DEFAULT_PROFILE = {
   injury_muscles: [],
   intensity: 3,
-  feedback_history: [],
   onboarding_complete: false,
   fitness_goals: '',
   days_per_week: 5,
@@ -240,13 +239,7 @@ export default function App() {
 
   const [activePlan, setActivePlan] = useState(null)
   const [selectedDay, setSelectedDay] = useState(null)
-  const [showHistory, setShowHistory] = useState(false)
-  const [savePreviousWeeks, setSavePreviousWeeks] = useState(true)
-  const [planHistory, setPlanHistory] = useState([])
   const [lastRequestId, setLastRequestId] = useState(null)
-
-  const [showAnalytics, setShowAnalytics] = useState(false)
-  const [feedbackSoreness, setFeedbackSoreness] = useState(3)
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerLoading, setDrawerLoading] = useState(false)
@@ -392,23 +385,6 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
-
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('workout_plan_history')
-      if (stored) setPlanHistory(JSON.parse(stored))
-    } catch {
-      setPlanHistory([])
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('workout_plan_history', JSON.stringify(planHistory.slice(0, 12)))
-    } catch {
-      // noop
-    }
-  }, [planHistory])
 
   useEffect(() => {
     const id = (userId || '').trim()
@@ -714,18 +690,6 @@ export default function App() {
       },
     ])
 
-    if (savePreviousWeeks) {
-      setPlanHistory((prev) => [
-        {
-          id: `${Date.now()}`,
-          createdAt: planPack.createdAt,
-          userId: (userId || 'user').trim(),
-          days: labels.length,
-          plan: planPack.plan,
-        },
-        ...prev,
-      ].slice(0, 12))
-    }
   }
 
   const generatePlan = async (daysOverride = null, source = 'button') => {
@@ -827,23 +791,6 @@ export default function App() {
       appendSystem(`Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
-    }
-  }
-
-  const submitFeedback = async () => {
-    const id = (userId || '').trim()
-    if (!id) return
-    const res = await fetch(`${API}/feedback`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: id, soreness: feedbackSoreness }),
-    })
-    if (res.ok) {
-      setProfile((prev) => ({
-        ...prev,
-        feedback_history: [...(prev.feedback_history || []), { soreness: feedbackSoreness }].slice(-20),
-      }))
-      appendSystem('Feedback saved. Next plan cycle will adapt soreness policy.')
     }
   }
 
@@ -1199,7 +1146,7 @@ export default function App() {
           <h3>Current Training State</h3>
           <p className="section-hint">Live or projected load by muscle group.</p>
           {stateRows.rows.length === 0 && projectedStateRows.length === 0 ? (
-            <p className="muted">No tracked muscle state yet. Generate a plan and submit feedback.</p>
+            <p className="muted">No tracked muscle state yet. Generate a plan to start tracking.</p>
           ) : (
             <div className="state-list">
               {stateRows.rows.length === 0 && projectedStateRows.length > 0 && (
@@ -1221,84 +1168,6 @@ export default function App() {
           )}
         </section>
 
-        <section className="panel-section">
-          <h3>Feedback & Analytics</h3>
-          <p className="section-hint">Log soreness to adapt next week automatically.</p>
-          <div className="row gap">
-            <input
-              type="range"
-              min={1}
-              max={5}
-              step={1}
-              value={feedbackSoreness}
-              onChange={(e) => setFeedbackSoreness(Number(e.target.value))}
-            />
-            <span>{feedbackSoreness}</span>
-          </div>
-          <div className="slider-labels">
-            <span>None</span>
-            <span>Very Sore</span>
-          </div>
-          <div className="row gap">
-            <button type="button" className="btn btn-primary btn-sm" onClick={submitFeedback}>Submit soreness</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowAnalytics((v) => !v)}>
-              {showAnalytics ? 'Hide analytics' : 'View analytics'}
-            </button>
-          </div>
-
-          {showAnalytics && (
-            <div className="analytics-box">
-              <p className="muted small">Weekly volume distribution</p>
-              {(stateRows.rows || []).slice(0, 8).map((r) => (
-                <div key={r.muscle} className="analytic-bar-row">
-                  <span>{r.muscle}</span>
-                  <div className="analytic-bar"><div style={{ width: `${Math.min(100, (r.volume / stateRows.cap) * 100)}%` }} /></div>
-                </div>
-              ))}
-              <p className="muted small">Soreness trend: {(profile.feedback_history || []).slice(-5).map((x) => x.soreness).join(' → ') || 'No data'}</p>
-              <p className="muted small">Muscle distribution pie (text): {(stateRows.rows || []).map((r) => `${r.muscle}:${r.volume}`).join(' | ') || 'No data'}</p>
-            </div>
-          )}
-
-          <label className="toggle-row">
-            <input type="checkbox" checked={savePreviousWeeks} onChange={(e) => setSavePreviousWeeks(e.target.checked)} />
-            Auto-save weekly plans
-          </label>
-          <label className="toggle-row">
-            <input type="checkbox" checked={showHistory} onChange={(e) => setShowHistory(e.target.checked)} />
-            Show saved plans
-          </label>
-
-          {showHistory && (
-            <div className="history-list">
-              {planHistory.length === 0 && <p className="muted small">No saved weeks yet.</p>}
-              {planHistory.map((h) => (
-                <button
-                  key={h.id}
-                  type="button"
-                  className="history-item"
-                  onClick={() => {
-                    setActivePlan({
-                      plan: h.plan,
-                      krr_reasoning: {},
-                      day_themes: {},
-                      day_theme_muscles: {},
-                      evaluation_ok: true,
-                      suggestions: [],
-                      requestId: null,
-                      createdAt: h.createdAt,
-                    })
-                    const labels = sortedDayLabelsFromPlan(h.plan)
-                    setSelectedDay(labels[0] || null)
-                    appendSystem(`Loaded previous week from ${new Date(h.createdAt).toLocaleString()}.`)
-                  }}
-                >
-                  {new Date(h.createdAt).toLocaleDateString()} • {h.days} days
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
       </aside>
 
       <main className="center-panel card">
@@ -1614,7 +1483,7 @@ export default function App() {
               </div>
               {explainSectionsOpen.policy && (
                 <div className="reason-content">
-                  <p>✓ Adjusted workload using soreness and weekly volume feedback.</p>
+                  <p>✓ Adjusted workload using soreness and weekly volume state.</p>
                   <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
                   <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
                   {topSorenessSignals.length > 0 && (
