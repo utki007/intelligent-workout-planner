@@ -38,4 +38,8 @@ jobs:
           git remote remove hf 2>/dev/null || true
           git remote add hf "$HF_REMOTE_URL"
 
-          git push hf HEAD:main --force
+          SNAP_BRANCH="hf-sync-snapshot"
+          git switch --orphan "$SNAP_BRANCH"
+          git add -A
+          git commit -m "HF sync snapshot ${GITHUB_SHA}"
+          git push hf "$SNAP_BRANCH":main --force
