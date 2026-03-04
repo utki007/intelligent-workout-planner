@@ -232,6 +232,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const [chatActivity, setChatActivity] = useState('')
   const [expandedMsg, setExpandedMsg] = useState({})
   const [collapsedPlanMsg, setCollapsedPlanMsg] = useState({})
 
@@ -579,7 +580,7 @@ export default function App() {
   )
 
   const statusText = chatLoading
-    ? 'Working on your request…'
+    ? (chatActivity || 'Working on your request…')
     : 'Ready • Generate a plan or ask for changes'
 
   const lastUserMessage = useMemo(() => {
@@ -760,9 +761,11 @@ export default function App() {
     }
 
     setChatLoading(true)
+    setChatActivity('Building your plan with injury and safety rules…')
 
     try {
       const data = await runGeneratePlan(id, daysOverride)
+      setChatActivity('Finalizing your plan summary…')
       const days = sortedDayLabelsFromPlan(data.plan || {}).length
       const text = source === 'chat'
         ? `Plan ready. Built ${days}-day themed schedule with rule validation and adaptation.`
@@ -772,6 +775,7 @@ export default function App() {
       pushToast('error', `Plan generation failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
+      setChatActivity('')
     }
   }
 
@@ -783,14 +787,17 @@ export default function App() {
 
     const id = (userId || '').trim() || 'user'
     setChatLoading(true)
+    setChatActivity('Understanding your request…')
     try {
       const intent = await resolveIntent(id, msg)
+      setChatActivity('Routing to the best action…')
       const inferred = intent.profile_updates || {}
       const persistableInferred = toPersistedProfileUpdates(inferred)
       const hasPersistableUpdates = Object.keys(persistableInferred).length > 0
 
       if (intent.intent === 'generate_plan') {
         if (hasPersistableUpdates) {
+          setChatActivity('Applying profile updates…')
           await saveProfile(persistableInferred)
           setOnboardingDraft((prev) => ({
             ...prev,
@@ -801,11 +808,13 @@ export default function App() {
           }))
           pushToast('success', 'Applied detected profile updates before plan generation.')
         }
+        setChatActivity('Generating your weekly plan…')
         await generatePlan(intent.days_per_week, 'chat')
         return
       }
 
       if (intent.intent === 'profile_update') {
+        setChatActivity('Preparing profile update confirmation…')
         if (hasPersistableUpdates) {
           const detectedSummary = summarizeProfileUpdates(inferred)
           setChatMessages((prev) => [...prev, {
@@ -834,6 +843,7 @@ export default function App() {
         ? Object.entries(activePlan.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
         : null
 
+      setChatActivity('Composing response from your plan and profile…')
       const res = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -848,12 +858,14 @@ export default function App() {
       const requestId = res.headers.get('X-Request-ID')
       if (requestId) setLastRequestId(requestId)
       if (!res.ok) throw new Error(await res.text())
+      setChatActivity('Formatting response…')
       const data = await res.json()
       setChatMessages((prev) => [...prev, { role: 'assistant', text: data.response || 'No response.' }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
       setChatLoading(false)
+      setChatActivity('')
     }
   }
 
@@ -1404,6 +1416,16 @@ export default function App() {
               )}
             </div>
           ))}
+
+          {chatLoading && (
+            <div className="msg msg-assistant msg-activity" aria-live="polite" aria-atomic="true">
+              <p className="msg-role">🤖 Coach AI</p>
+              <div className="activity-line">
+                <span className="activity-pulse" aria-hidden />
+                <span>{chatActivity || 'Thinking…'}</span>
+              </div>
+            </div>
+          )}
 
           <div ref={chatEndRef} />
         </div>
