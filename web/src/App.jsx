@@ -579,63 +579,7 @@ export default function App() {
     [injuryMap, normalizedDraftInjuries],
   )
 
-  const statusText = chatLoading
-    ? (chatActivity || 'Working on your request…')
-    : 'Ready • Generate a plan or ask for changes'
-
-  const lastUserMessage = useMemo(() => {
-    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
-      const m = chatMessages[i]
-      if (m?.role === 'user' && m?.text) return String(m.text).toLowerCase()
-    }
-    return ''
-  }, [chatMessages])
-
-  const guidedPrompts = useMemo(() => {
-    const hasPlan = Boolean(activePlan?.plan && Object.keys(activePlan.plan || {}).length)
-    if (!hasPlan) {
-      return [
-        { icon: '⚡', text: 'Generate my plan for this week.' },
-        { icon: '🏗️', text: 'Plan a 3-day split for me.' },
-        { icon: '🩹', text: 'Update my injuries before generating.' },
-        { icon: '🎯', text: 'Set my goals to build strength safely.' },
-      ]
-    }
-
-    const prompts = []
-    const selectedLabel = selectedDay ? formatDayLabel(selectedDay) : 'today'
-
-    if (selectedDay) {
-      prompts.push({ icon: '🔎', text: `Explain ${selectedLabel} for me.` })
-    }
-
-    if (lastUserMessage.includes('today')) {
-      prompts.push({ icon: '➡️', text: 'Tell me about tomorrow.' })
-      prompts.push({ icon: '🛡️', text: `Make ${selectedLabel} lower impact.` })
-      prompts.push({ icon: '♻️', text: `Regenerate ${selectedLabel}.` })
-    } else if (lastUserMessage.includes('tomorrow') || lastUserMessage.includes('next workout')) {
-      prompts.push({ icon: '🗓️', text: 'What am I doing today?' })
-      prompts.push({ icon: '🛠️', text: 'Swap my first two exercises for this day.' })
-      prompts.push({ icon: '📉', text: 'Reduce volume for this day.' })
-    } else if (lastUserMessage.includes('progress') || lastUserMessage.includes('status')) {
-      prompts.push({ icon: '📈', text: 'Show my progress summary.' })
-      prompts.push({ icon: '🧠', text: 'Explain how workload adaptation works.' })
-      prompts.push({ icon: '⚖️', text: 'How can I avoid overtraining this week?' })
-    } else {
-      prompts.push({ icon: '🗓️', text: 'What am I doing today?' })
-      prompts.push({ icon: '➡️', text: 'What is my next workout?' })
-      prompts.push({ icon: '🛡️', text: 'Explain this day with injury safety in mind.' })
-    }
-
-    const deduped = []
-    const seen = new Set()
-    prompts.forEach((p) => {
-      if (!p?.text || seen.has(p.text)) return
-      seen.add(p.text)
-      deduped.push(p)
-    })
-    return deduped.slice(0, 4)
-  }, [activePlan, selectedDay, lastUserMessage])
+  const statusText = chatLoading ? (chatActivity || '') : ''
 
   const saveProfile = async (updates) => {
     const id = (userId || '').trim()
@@ -715,7 +659,7 @@ export default function App() {
     return { ...data, requestId }
   }
 
-  const publishPlan = (data, assistantText) => {
+  const publishPlan = (data, assistantText = null) => {
     const planPack = {
       plan: data.plan || {},
       krr_reasoning: data.krr_reasoning || {},
@@ -731,24 +675,27 @@ export default function App() {
     const labels = sortedDayLabelsFromPlan(planPack.plan)
     setSelectedDay(labels[0] || null)
 
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        role: 'assistant',
-        text: assistantText,
-        plan: planPack.plan,
-        day_themes: planPack.day_themes,
-        krr_reasoning: planPack.krr_reasoning,
-        safetyVerified: Boolean(planPack.evaluation_ok),
-        validationText: planPack.evaluation_ok
-          ? 'Plan validated against safety constraints.'
-          : `Plan generated with suggestions: ${(planPack.suggestions || []).join(' ') || 'See policy notes.'}`,
-      },
-    ])
+    if (assistantText) {
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: assistantText,
+          plan: planPack.plan,
+          day_themes: planPack.day_themes,
+          krr_reasoning: planPack.krr_reasoning,
+          safetyVerified: Boolean(planPack.evaluation_ok),
+          validationText: planPack.evaluation_ok
+            ? 'Plan validated against safety constraints.'
+            : `Plan generated with suggestions: ${(planPack.suggestions || []).join(' ') || 'See policy notes.'}`,
+        },
+      ])
+    }
 
+    return planPack
   }
 
-  const generatePlan = async (daysOverride = null, source = 'button') => {
+  const generatePlan = async (daysOverride = null, source = 'button', activityHint = '') => {
     const id = (userId || '').trim()
     if (!id) {
       pushToast('error', 'Select or create an athlete profile first.')
@@ -761,22 +708,57 @@ export default function App() {
     }
 
     setChatLoading(true)
-    setChatActivity('Building your plan with injury and safety rules…')
+    setChatActivity(activityHint || '')
 
     try {
       const data = await runGeneratePlan(id, daysOverride)
-      setChatActivity('Finalizing your plan summary…')
-      const days = sortedDayLabelsFromPlan(data.plan || {}).length
-      const text = source === 'chat'
-        ? `Plan ready. Built ${days}-day themed schedule with rule validation and adaptation.`
-        : `Generated ${days}-day themed plan. Use day tabs on the right to inspect and control each day.`
-      publishPlan(data, text)
+      if (source === 'chat') {
+        publishPlan(data, null)
+      } else {
+        const days = sortedDayLabelsFromPlan(data.plan || {}).length
+        publishPlan(data, `Generated ${days}-day themed plan. Use day tabs on the right to inspect and control each day.`)
+      }
+      return data
     } catch (e) {
       pushToast('error', `Plan generation failed: ${e.message || 'Unknown error'}`)
+      return null
     } finally {
       setChatLoading(false)
       setChatActivity('')
     }
+  }
+
+  const requestAssistantChat = async (id, msg, planSummaryOverride = null, krrSummaryOverride = null, selectedDayOverride = null) => {
+    const planSummary = planSummaryOverride ?? (
+      activePlan
+        ? sortedDayLabelsFromPlan(activePlan.plan)
+          .map((d) => `${d}: ${(activePlan.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+          .join('; ')
+        : null
+    )
+
+    const krrSummary = krrSummaryOverride ?? (
+      activePlan
+        ? Object.entries(activePlan.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+        : null
+    )
+
+    const res = await fetch(`${API}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: id,
+        message: msg,
+        plan_summary: planSummary,
+        krr_summary: krrSummary,
+        selected_day: selectedDayOverride ?? selectedDay ?? null,
+      }),
+    })
+    const requestId = res.headers.get('X-Request-ID')
+    if (requestId) setLastRequestId(requestId)
+    if (!res.ok) throw new Error(await res.text())
+    const data = await res.json()
+    return data.response || 'No response.'
   }
 
   const sendChat = async (textOverride = null) => {
@@ -787,17 +769,16 @@ export default function App() {
 
     const id = (userId || '').trim() || 'user'
     setChatLoading(true)
-    setChatActivity('Understanding your request…')
+    setChatActivity('')
     try {
       const intent = await resolveIntent(id, msg)
-      setChatActivity('Routing to the best action…')
+      setChatActivity(intent.assistant_reply || '')
       const inferred = intent.profile_updates || {}
       const persistableInferred = toPersistedProfileUpdates(inferred)
       const hasPersistableUpdates = Object.keys(persistableInferred).length > 0
 
       if (intent.intent === 'generate_plan') {
         if (hasPersistableUpdates) {
-          setChatActivity('Applying profile updates…')
           await saveProfile(persistableInferred)
           setOnboardingDraft((prev) => ({
             ...prev,
@@ -808,18 +789,39 @@ export default function App() {
           }))
           pushToast('success', 'Applied detected profile updates before plan generation.')
         }
-        setChatActivity('Generating your weekly plan…')
-        await generatePlan(intent.days_per_week, 'chat')
+        const generated = await generatePlan(intent.days_per_week, 'chat', intent.assistant_reply || '')
+        if (generated?.plan) {
+          const labels = sortedDayLabelsFromPlan(generated.plan || {})
+          const selected = labels[0] || selectedDay || null
+          const planSummary = labels
+            .map((d) => `${d}: ${(generated.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+            .join('; ')
+          const krrSummary = Object.entries(generated.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+          setChatActivity(intent.assistant_reply || '')
+          const assistantReply = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+          setChatMessages((prev) => [...prev, {
+            role: 'assistant',
+            text: assistantReply,
+            plan: generated.plan || {},
+            day_themes: generated.day_themes || {},
+            krr_reasoning: generated.krr_reasoning || {},
+            safetyVerified: Boolean(generated.evaluation_ok),
+            validationText: generated.evaluation_ok
+              ? 'Plan validated against safety constraints.'
+              : `Plan generated with suggestions: ${(generated.suggestions || []).join(' ') || 'See policy notes.'}`,
+          }])
+        }
         return
       }
 
       if (intent.intent === 'profile_update') {
-        setChatActivity('Preparing profile update confirmation…')
+        const fallbackReply = await requestAssistantChat(id, msg)
+        const assistantText = intent.assistant_reply || fallbackReply
         if (hasPersistableUpdates) {
           const detectedSummary = summarizeProfileUpdates(inferred)
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
-            text: intent.assistant_reply || 'Detected profile updates. Confirm before saving.',
+            text: assistantText,
             pendingProfileUpdate: inferred,
             pendingProfileSummary: detectedSummary,
             pendingProfileStatus: 'pending',
@@ -827,40 +829,14 @@ export default function App() {
         } else {
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
-            text: intent.assistant_reply || 'Profile update detected but no concrete fields were extracted.',
+            text: assistantText,
           }])
         }
         return
       }
 
-      const planSummary = activePlan
-        ? sortedDayLabelsFromPlan(activePlan.plan)
-          .map((d) => `${d}: ${(activePlan.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
-          .join('; ')
-        : null
-
-      const krrSummary = activePlan
-        ? Object.entries(activePlan.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
-        : null
-
-      setChatActivity('Composing response from your plan and profile…')
-      const res = await fetch(`${API}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: id,
-          message: msg,
-          plan_summary: planSummary,
-          krr_summary: krrSummary,
-          selected_day: selectedDay || null,
-        }),
-      })
-      const requestId = res.headers.get('X-Request-ID')
-      if (requestId) setLastRequestId(requestId)
-      if (!res.ok) throw new Error(await res.text())
-      setChatActivity('Formatting response…')
-      const data = await res.json()
-      setChatMessages((prev) => [...prev, { role: 'assistant', text: data.response || 'No response.' }])
+      const assistantReply = await requestAssistantChat(id, msg)
+      setChatMessages((prev) => [...prev, { role: 'assistant', text: assistantReply }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
@@ -1269,10 +1245,12 @@ export default function App() {
           </div>
         </div>
 
-          <div className="status-strip">
-            <span className="pulse-dot" />
-            <span>{statusText}</span>
-          </div>
+          {Boolean(statusText) && (
+            <div className="status-strip">
+              <span className="pulse-dot" />
+              <span>{statusText}</span>
+            </div>
+          )}
 
         {newAthleteOpen && (
           <div className="new-athlete-row">
@@ -1287,23 +1265,6 @@ export default function App() {
         )}
 
         <div className="chat-zone">
-          {!hasConversation && !chatLoading && (
-            <div className="quick-start">
-              <p className="muted">Start with one of these:</p>
-              <div className="quick-chips">
-                <button type="button" className="quick-chip" onClick={() => sendChat('Plan a 3-day split')}>
-                  🏗️ Build a 3-day split
-                </button>
-                <button type="button" className="quick-chip" onClick={() => sendChat('Show my progress')}>
-                  📈 Review training progress
-                </button>
-                <button type="button" className="quick-chip" onClick={() => sendChat('Generate my plan for this week')}>
-                  🗓️ Generate this week’s plan
-                </button>
-              </div>
-            </div>
-          )}
-
           {chatMessages.map((m, idx) => (
             <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
               {(() => {
@@ -1431,23 +1392,6 @@ export default function App() {
         </div>
 
         <div className="assistant-bar" role="region" aria-label="Assistant actions">
-          <div className="system-hints" role="note" aria-label="Chat guidance prompts">
-            <p className="system-hints-title">🧭 System Tips</p>
-            <div className="system-hints-chips">
-              {guidedPrompts.map((prompt) => (
-                <button
-                  key={prompt.text}
-                  type="button"
-                  className="system-hint-chip"
-                  disabled={chatLoading}
-                  onClick={() => sendChat(prompt.text)}
-                >
-                  <span aria-hidden>{prompt.icon}</span> {prompt.text}
-                </button>
-              ))}
-            </div>
-          </div>
-
           <form
             className="chat-input-row"
             onSubmit={(e) => {
