@@ -36,7 +36,6 @@ from agent.krr import (
 )
 from agent.llm import LLM
 from agent.mcp import run_plan_cycle
-from agent.reliability_metrics import get_metrics
 from planner.constraints import (
     DEFAULT_DAYS_PER_WEEK,
     MAX_DAYS_PER_WEEK,
@@ -1047,12 +1046,6 @@ def get_reasoning():
         ],
         "facts_from": ["exercises_db.xlsx (name, target, difficulty)", "your injuries list"],
     }
-
-
-@app.get("/api/reliability")
-def get_reliability_metrics():
-    """Return lightweight reliability counters for monitoring."""
-    return {"metrics": get_metrics()}
 
 
 @app.post("/api/plan", response_model=PlanOut)

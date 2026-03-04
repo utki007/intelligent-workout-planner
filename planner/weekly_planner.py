@@ -17,7 +17,6 @@ from agent.agent_state import AgentGoals, AgentState
 from agent.decision_policy import DecisionPolicy
 from agent.krr import get_krr_reasoning, load_kb, normalize_injury_muscles, query_recommended
 from agent.llm import LLM
-from agent.reliability_metrics import increment_metric
 from planner.constraints import (
     MAX_EXERCISES_PER_DAY,
     MAX_REPS,
@@ -469,10 +468,7 @@ def generate_weekly_plan(
 
     validated_payload, schema_errors = parse_llm_plan_payload(llm_payload)
     if validated_payload is None:
-        increment_metric("schema_fail_rate")
         logger.warning("planner.schema valid=false user_id=%s errors=%s", user_id, schema_errors[:8])
-    else:
-        increment_metric("schema_pass_rate")
 
     day_specs = _sanitize_llm_plan(
         llm_payload=validated_payload,
@@ -498,13 +494,11 @@ def generate_weekly_plan(
     )
 
     if day_specs and not verification.is_valid:
-        increment_metric("verifier_fail_rate")
         logger.warning(
             "planner.verify failed=true user_id=%s issues=%s",
             user_id,
             verification.issues[:8],
         )
-        increment_metric("repair_attempt_count")
         llm_payload_retry = llm.build_weekly_plan(
             user_id=user_id,
             profile=llm_profile,
@@ -514,10 +508,7 @@ def generate_weekly_plan(
         )
         validated_retry, retry_schema_errors = parse_llm_plan_payload(llm_payload_retry)
         if validated_retry is None:
-            increment_metric("schema_fail_rate")
             logger.warning("planner.schema retry_valid=false user_id=%s errors=%s", user_id, retry_schema_errors[:8])
-        else:
-            increment_metric("schema_pass_rate")
         day_specs_retry = _sanitize_llm_plan(
             llm_payload=validated_retry,
             days_per_week=days_per_week,
@@ -542,11 +533,9 @@ def generate_weekly_plan(
         if verification_retry.is_valid:
             day_specs = day_specs_retry
             verification = verification_retry
-            increment_metric("repair_success_rate")
             logger.info("planner.verify repair_success=true user_id=%s", user_id)
 
     if not day_specs or not verification.is_valid:
-        increment_metric("fallback_rate")
         logger.warning("planner.llm unusable_output=true fallback=algorithmic user_id=%s", user_id)
         day_specs = _fallback_plan(
             days_per_week=days_per_week,
@@ -563,7 +552,6 @@ def generate_weekly_plan(
             len(day_specs),
             verification.stats.get("issue_count", 0),
         )
-    increment_metric("plans_generated")
 
     plan: dict[str, list[dict]] = {}
     krr_reasoning: dict[str, str] = {}

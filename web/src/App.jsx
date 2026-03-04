@@ -234,7 +234,6 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false)
   const [chatActivity, setChatActivity] = useState('')
   const [expandedMsg, setExpandedMsg] = useState({})
-  const [collapsedPlanMsg, setCollapsedPlanMsg] = useState({})
 
   const hasConversation = useMemo(
     () => chatMessages.some((m) => m.role === 'assistant' || m.role === 'user'),
@@ -266,6 +265,7 @@ export default function App() {
   const [injuryMap, setInjuryMap] = useState(DEFAULT_JOINT_MUSCLE_MAP)
 
   const chatEndRef = useRef(null)
+  const chatInputRef = useRef(null)
 
   const activeAthlete = useMemo(
     () => athletes.find((a) => a.id === activeAthleteId) || null,
@@ -389,6 +389,13 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!chatLoading) chatInputRef.current?.focus()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [chatLoading, activeAthleteId])
 
   useEffect(() => {
     const id = (userId || '').trim()
@@ -681,13 +688,6 @@ export default function App() {
         {
           role: 'assistant',
           text: assistantText,
-          plan: planPack.plan,
-          day_themes: planPack.day_themes,
-          krr_reasoning: planPack.krr_reasoning,
-          safetyVerified: Boolean(planPack.evaluation_ok),
-          validationText: planPack.evaluation_ok
-            ? 'Plan validated against safety constraints.'
-            : `Plan generated with suggestions: ${(planPack.suggestions || []).join(' ') || 'See policy notes.'}`,
         },
       ])
     }
@@ -789,7 +789,8 @@ export default function App() {
           }))
           pushToast('success', 'Applied detected profile updates before plan generation.')
         }
-        const generated = await generatePlan(intent.days_per_week, 'chat', intent.assistant_reply || '')
+        setChatActivity(intent.assistant_reply || 'Building your personalized plan...')
+        const generated = await runGeneratePlan(id, intent.days_per_week)
         if (generated?.plan) {
           const labels = sortedDayLabelsFromPlan(generated.plan || {})
           const selected = labels[0] || selectedDay || null
@@ -797,19 +798,18 @@ export default function App() {
             .map((d) => `${d}: ${(generated.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
             .join('; ')
           const krrSummary = Object.entries(generated.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
-          setChatActivity(intent.assistant_reply || '')
-          const assistantReply = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+          setChatActivity('Finalizing your response...')
+          let assistantReply = intent.assistant_reply || 'Your plan is ready. I have applied it to your weekly view.'
+          try {
+            assistantReply = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+          } catch {
+            // Fall back to deterministic copy while still publishing the generated plan.
+          }
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantReply,
-            plan: generated.plan || {},
-            day_themes: generated.day_themes || {},
-            krr_reasoning: generated.krr_reasoning || {},
-            safetyVerified: Boolean(generated.evaluation_ok),
-            validationText: generated.evaluation_ok
-              ? 'Plan validated against safety constraints.'
-              : `Plan generated with suggestions: ${(generated.suggestions || []).join(' ') || 'See policy notes.'}`,
           }])
+          publishPlan(generated, null)
         }
         return
       }
@@ -1292,9 +1292,6 @@ export default function App() {
                   </>
                 )
               })()}
-              {m.safetyVerified && <span className="safety-badge">🟢 Safety Verified</span>}
-              {m.validationText && !m.safetyVerified && <p className="validation-ok">✓ {m.validationText}</p>}
-
               {m.pendingProfileUpdate && (
                 <div className="detected-update-box">
                   <p className="detected-update-label">Detected update</p>
@@ -1332,49 +1329,6 @@ export default function App() {
                 </div>
               )}
 
-              {m.plan && (
-                <div className="plan-summary-card">
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setCollapsedPlanMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
-                  >
-                    {collapsedPlanMsg[idx] ? 'Show summary' : 'Hide summary'}
-                  </button>
-
-                  {!collapsedPlanMsg[idx] && (
-                    <div className="plan-summary-body">
-                      {sortedDayLabelsFromPlan(m.plan).map((d) => (
-                        <div key={d} className="summary-day-card">
-                          <p className="summary-day-head">
-                            <strong>{formatDayLabel(d)}</strong>
-                            <span className="summary-day-theme">{m.day_themes?.[d] || d}</span>
-                          </p>
-                          <ul className="summary-ex-list">
-                            {(m.plan[d] || []).length === 0 && <li className="summary-ex-item muted">Rest Day</li>}
-                            {(m.plan[d] || []).map((e, exIdx) => (
-                              <li key={`${d}-${e.name}-${exIdx}`} className="summary-ex-item">
-                                {toTitleCase(e.name)}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="row gap">
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => openExplanationDrawer(selectedDay || sortedDayLabelsFromPlan(m.plan)[0])}
-                    >
-                      🔍 View reasoning
-                    </button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={regenerateDay}>♻️ Regenerate selected day</button>
-                  </div>
-                </div>
-              )}
             </div>
           ))}
 
@@ -1400,12 +1354,16 @@ export default function App() {
             }}
           >
             <input
+              ref={chatInputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Ask anything (e.g. What am I doing today? / Explain Day 2 / Make next workout lower impact)"
+              className="chat-composer-input"
+              placeholder="Ask anything ..."
               disabled={chatLoading}
+              autoFocus
+              aria-label="Message coach"
             />
-            <button type="submit" className="btn btn-primary" disabled={chatLoading}>➤ Send</button>
+            <button type="submit" className="btn btn-primary chat-send-btn" disabled={chatLoading}>Send</button>
           </form>
         </div>
 
