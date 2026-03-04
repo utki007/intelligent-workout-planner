@@ -1,7 +1,7 @@
 {
-  "schema_pass_rate": 59,
+  "schema_pass_rate": 61,
   "fallback_rate": 12,
-  "plans_generated": 58,
+  "plans_generated": 60,
   "verifier_fail_rate": 1,
   "repair_attempt_count": 1
 }

@@ -219,7 +219,9 @@ class LLM:
             "do NOT ask them to provide it again — they've already set it up. If they don't have a plan yet, "
             "offer to generate one. If they mention recovery or changes, suggest updating their profile. "
             "If context is missing or ambiguous, ask one concise clarifying question instead of guessing. "
-            "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names."
+            "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names. "
+            "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
+            "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )
         user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
 
@@ -395,6 +397,38 @@ class LLM:
             bool(out.get("profile_updates")),
         )
         return out
+
+    def activity_hint(self, user_message: str, intent: str | None = None) -> str | None:
+        """Generate a short in-progress UI status line for the current request."""
+        if not self._client or not self._model:
+            return None
+
+        system = (
+            "You create concise status text for an in-progress fitness assistant UI. "
+            "Return plain text only, 3-8 words, active voice, friendly, no trailing punctuation."
+        )
+        user_content = (
+            f"Intent: {(intent or 'chat').strip()}\n"
+            f"User message: {(user_message or '').strip()}\n"
+            "Provide one short status line."
+        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.3,
+                max_tokens=24,
+            )
+            choice = response.choices[0] if response.choices else None
+            if choice and getattr(choice, "message", None):
+                text = (choice.message.content or "").strip()
+                return text or None
+        except Exception:
+            logger.exception("llm.activity_hint error")
+        return None
 
     def build_weekly_plan(
         self,

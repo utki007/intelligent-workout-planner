@@ -784,23 +784,28 @@ def _resolve_day_for_schedule_query(plan: dict, message: str, selected_day: str 
     return day_keys[0]
 
 
-def _build_day_plan_reply(day_label: str, exercises: list[dict]) -> str:
-    if not exercises:
-        return f"{day_label} is a rest/recovery day in your current saved plan."
+def _structured_schedule_facts(plan: dict, day: str) -> str:
+    exercises = list(plan.get(day, []) or [])
+    compact = []
+    for ex in exercises:
+        compact.append(
+            {
+                "name": str(ex.get("name", "")).strip(),
+                "sets": ex.get("sets"),
+                "reps": ex.get("reps"),
+                "target": str(ex.get("target", "")).strip(),
+            }
+        )
+    facts = {
+        "query_type": "schedule_lookup",
+        "resolved_day": day,
+        "exercise_count": len(compact),
+        "exercises": compact,
+    }
+    return json.dumps(facts, ensure_ascii=False)
 
-    lines = [f"{day_label} in your current saved plan:"]
-    for i, ex in enumerate(exercises, start=1):
-        name = str(ex.get("name", "Exercise")).strip() or "Exercise"
-        sets = ex.get("sets")
-        reps = ex.get("reps")
-        target = str(ex.get("target", "")).strip()
-        prescription = f"{sets} x {reps}" if sets is not None and reps is not None else "as prescribed"
-        suffix = f" ({target})" if target else ""
-        lines.append(f"{i}. {name} — {prescription}{suffix}")
-    return "\n".join(lines)
 
-
-def _build_progress_reply(user_id: str, profile: dict) -> str:
+def _structured_progress_facts(user_id: str, profile: dict) -> str:
     stored = load_plan_for_user(user_id)
     plan = stored[0] if stored else {}
     total_days = len(plan)
@@ -811,14 +816,16 @@ def _build_progress_reply(user_id: str, profile: dict) -> str:
     if state:
         tracked_muscles = len(set(list((state.soreness_per_muscle or {}).keys()) + list((state.weekly_volume_per_muscle or {}).keys())))
 
-    injuries = profile.get("injury_muscles", []) or []
-    lines = [
-        "Here’s your tracked progress so far:",
-        f"- Profile saved: goal='{(profile.get('fitness_goals') or 'not set')}', days/week={profile.get('days_per_week', DEFAULT_DAYS_PER_WEEK)}, injuries={', '.join(injuries) if injuries else 'none'}.",
-        f"- Latest saved plan: {total_days} days, {total_exercises} exercises total." if total_days else "- Latest saved plan: none yet. Ask me to generate a plan and I’ll save it.",
-        f"- Muscle tracking: {tracked_muscles} muscles with soreness/volume state.",
-    ]
-    return "\n".join(lines)
+    facts = {
+        "query_type": "progress_lookup",
+        "fitness_goals": profile.get("fitness_goals") or "not set",
+        "days_per_week": profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK),
+        "injuries": profile.get("injury_muscles", []) or [],
+        "latest_plan_days": total_days,
+        "latest_plan_exercises": total_exercises,
+        "tracked_muscles": tracked_muscles,
+    }
+    return json.dumps(facts, ensure_ascii=False)
 
 
 @app.middleware("http")
@@ -974,17 +981,11 @@ def detect_intent(body: IntentIn):
     reply = payload.get("assistant_reply")
     if not isinstance(reply, str) or not reply.strip():
         reply = None
-    if reply is None and intent == "profile_update" and profile_updates:
-        injury_update = profile_updates.get("injury_update") or {}
-        status = injury_update.get("status")
-        if status == "recovered":
-            reply = "I detected an injury recovery update. Confirm to save it."
-        elif status == "injured":
-            reply = "I detected new injury information. Confirm to save it."
-        elif status == "cleared":
-            reply = "I detected that injuries are cleared. Confirm to save it."
-        else:
-            reply = "I detected profile updates. Confirm before saving."
+    if reply is None:
+        llm = LLM()
+        generated_reply = llm.activity_hint(body.message, intent=intent)
+        if isinstance(generated_reply, str) and generated_reply.strip():
+            reply = generated_reply.strip()
 
     logger.info(
         "intent.detect user_id=%s message=\"%s\" intent=%s days_per_week=%s has_reply=%s update_keys=%s",
@@ -1292,33 +1293,6 @@ def chat(body: ChatIn):
         if not krr_summary:
             krr_summary = _summarize_saved_krr(saved_krr)
 
-    if _is_progress_query(body.message):
-        progress_reply = _build_progress_reply(body.user_id, prof)
-        append_chat_turn_to_profile(body.user_id, body.message, progress_reply)
-        logger.info(
-            "chat.progress user_id=%s message=\"%s\" has_saved_plan=%s",
-            body.user_id,
-            _clip(body.message, 120),
-            stored is not None,
-        )
-        return ChatOut(response=progress_reply)
-
-    if stored and _is_schedule_query(body.message):
-        saved_plan, _ = stored
-        resolved_day = _resolve_day_for_schedule_query(saved_plan, body.message, body.selected_day)
-        if resolved_day and resolved_day in saved_plan:
-            schedule_reply = _build_day_plan_reply(resolved_day, list(saved_plan.get(resolved_day, []) or []))
-            append_chat_turn_to_profile(body.user_id, body.message, schedule_reply)
-            logger.info(
-                "chat.schedule user_id=%s message=\"%s\" day=%s exercises=%s selected_day=%s",
-                body.user_id,
-                _clip(body.message, 120),
-                resolved_day,
-                len(saved_plan.get(resolved_day, []) or []),
-                body.selected_day,
-            )
-            return ChatOut(response=schedule_reply)
-
     profile_context = None
     if prof.get("onboarding_complete"):
         profile_context = f"User profile: Goals={prof.get('fitness_goals', '')}, Days/week={prof.get('days_per_week', 5)}, Injuries={', '.join(prof.get('injury_muscles', [])) or 'none'}."
@@ -1338,13 +1312,69 @@ def chat(body: ChatIn):
         )
     except Exception:
         kb_context = None
+
+    combined_context = (profile_context + ("\n" + kb_context if kb_context else "")) if profile_context else kb_context
     llm = LLM()
+
+    if _is_progress_query(body.message):
+        structured = _structured_progress_facts(body.user_id, prof)
+        progress_context = (
+            (combined_context + "\n\n" if combined_context else "")
+            + "Structured facts (must be followed exactly; do not invent values): "
+            + structured
+        )
+        progress_reply = llm.chat(
+            user_message=body.message,
+            plan_summary=plan_summary,
+            krr_summary=krr_summary,
+            user_id=body.user_id,
+            profile_context=progress_context,
+        )
+        append_chat_turn_to_profile(body.user_id, body.message, progress_reply)
+        logger.info(
+            "chat.progress user_id=%s message=\"%s\" has_saved_plan=%s llm_chars=%s",
+            body.user_id,
+            _clip(body.message, 120),
+            stored is not None,
+            len(progress_reply or ""),
+        )
+        return ChatOut(response=progress_reply)
+
+    if stored and _is_schedule_query(body.message):
+        saved_plan, _ = stored
+        resolved_day = _resolve_day_for_schedule_query(saved_plan, body.message, body.selected_day)
+        if resolved_day and resolved_day in saved_plan:
+            structured = _structured_schedule_facts(saved_plan, resolved_day)
+            schedule_context = (
+                (combined_context + "\n\n" if combined_context else "")
+                + "Structured facts (must be followed exactly; do not invent exercises or prescriptions): "
+                + structured
+            )
+            schedule_reply = llm.chat(
+                user_message=body.message,
+                plan_summary=plan_summary,
+                krr_summary=krr_summary,
+                user_id=body.user_id,
+                profile_context=schedule_context,
+            )
+            append_chat_turn_to_profile(body.user_id, body.message, schedule_reply)
+            logger.info(
+                "chat.schedule user_id=%s message=\"%s\" day=%s exercises=%s selected_day=%s llm_chars=%s",
+                body.user_id,
+                _clip(body.message, 120),
+                resolved_day,
+                len(saved_plan.get(resolved_day, []) or []),
+                body.selected_day,
+                len(schedule_reply or ""),
+            )
+            return ChatOut(response=schedule_reply)
+
     response = llm.chat(
         user_message=body.message,
         plan_summary=plan_summary,
         krr_summary=krr_summary,
         user_id=body.user_id,
-        profile_context=(profile_context + ("\n" + kb_context if kb_context else "")) if profile_context else kb_context,
+        profile_context=combined_context,
     )
     append_chat_turn_to_profile(body.user_id, body.message, response)
     logger.info(
