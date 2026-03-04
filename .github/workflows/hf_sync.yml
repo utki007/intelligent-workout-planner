@@ -38,4 +38,4 @@ jobs:
           git remote remove hf 2>/dev/null || true
           git remote add hf "$HF_REMOTE_URL"
 
-          git push hf HEAD:main
+          git push hf HEAD:main --force
