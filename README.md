@@ -15,8 +15,7 @@ A **Knowledge Representation & Reasoning (KRR)** workout planner that generates 
 ## Requirements
 
 - **Python 3.8+**
-- **pandas** — data handling and Excel
-- **openpyxl** — read/write `.xlsx`
+- **pandas** — data handling with CSV
 - **pyDatalog** — logical rules and querying
 - **fastapi**, **uvicorn** — HTTP API
 - **openai** — Azure OpenAI API for LLM explanations/chat
@@ -28,11 +27,7 @@ A **Knowledge Representation & Reasoning (KRR)** workout planner that generates 
 pip install -r requirements.txt
 ```
 
-Create the exercise database (if not present). All recommendations use `data/exercises_db.xlsx`:
-
-```bash
-python scripts/create_exercises_xlsx.py
-```
+Ensure the exercise database file exists at `data/exercises_db.csv`.
 
 ### Azure OpenAI (optional)
 
@@ -153,7 +148,7 @@ For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 ├── api.py                   # backward-compatible API launcher (delegates to dev.py)
 ├── dev.py                   # unified command hub (setup/api/web/cli/test)
 ├── data/
-│   ├── exercises_db.xlsx    # Exercise DB for all recommendations (name, target, difficulty)
+│   ├── exercises_db.csv     # Exercise DB for all recommendations (name, target, difficulty)
 │   ├── profile_default.json # Single generic profile persisted by API/web
 │   ├── plan_default.json    # Latest generated plan + KRR reasoning for API/web
 │   └── agent_state_*.json   # Optional CLI state artifacts (legacy/CLI flow)
@@ -181,7 +176,7 @@ For a quick orientation by responsibility, see `docs/PROJECT_STRUCTURE.md`.
 
 The planner does **not** use hardcoded split presets. Instead, it:
 
-- builds KRR facts/rules from `exercises_db.xlsx` and user injuries
+- builds KRR facts/rules from `exercises_db.csv` and user injuries
 - queries KB-recommended exercises (forbidden exercises excluded)
 - encodes a compact evidence payload (`recommended_by_muscle`, rules, injuries)
 - asks the LLM to synthesize a full `Day1…DayN` plan for the requested frequency

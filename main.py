@@ -36,10 +36,10 @@ def _data_dir():
 
 
 def _load_exercises():
-    path = os.path.join(_data_dir(), "exercises_db.xlsx")
+    path = os.path.join(_data_dir(), "exercises_db.csv")
     if not os.path.isfile(path):
-        raise FileNotFoundError(f"Missing {path}. Create data/exercises_db.xlsx (e.g. run scripts/create_exercises_xlsx.py and save as exercises_db.xlsx).")
-    return pd.read_excel(path)
+        raise FileNotFoundError(f"Missing {path}. Create data/exercises_db.csv.")
+    return pd.read_csv(path)
 
 
 def main():

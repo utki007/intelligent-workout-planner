@@ -70,7 +70,7 @@ app.add_middleware(
 # Paths from project root (api/app.py -> parent = project root)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
-EXERCISES_PATH = os.path.join(DATA_DIR, "exercises_db.xlsx")
+EXERCISES_PATH = os.path.join(DATA_DIR, "exercises_db.csv")
 FRONTEND_DIST_DIR = os.path.join(_PROJECT_ROOT, "web", "dist")
 FRONTEND_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")
 GENERIC_USER_ID = "default"
@@ -227,7 +227,7 @@ def get_exercises_df() -> pd.DataFrame:
     if not os.path.isfile(EXERCISES_PATH):
         logger.error("db.exercises missing path=%s", EXERCISES_PATH)
         raise HTTPException(status_code=500, detail=f"Missing {EXERCISES_PATH}")
-    df = pd.read_excel(EXERCISES_PATH)
+    df = pd.read_csv(EXERCISES_PATH)
     df.columns = [str(c).strip().lower() for c in df.columns]
     logger.debug("db.exercises loaded rows=%s cols=%s", len(df), list(df.columns))
     return df
@@ -1041,7 +1041,7 @@ def detect_intent(body: IntentIn):
 
 @app.get("/api/db")
 def get_db():
-    """Return what's stored: exercises from exercises_db.xlsx."""
+    """Return what's stored: exercises from exercises_db.csv."""
     exercises = []
     try:
         df = get_exercises_df()
@@ -1050,7 +1050,7 @@ def get_db():
         pass
     return {
         "exercises": exercises,
-        "source": "data/exercises_db.xlsx",
+        "source": "data/exercises_db.csv",
     }
 
 
@@ -1063,7 +1063,7 @@ def get_reasoning():
             "forbidden(User, Exercise) ← exercise trains a muscle M AND user has M injured",
             "recommended(User, Exercise) ← exercise in DB AND difficulty=beginner AND NOT forbidden(User, Exercise)",
         ],
-        "facts_from": ["exercises_db.xlsx (name, target, difficulty)", "your injuries list"],
+        "facts_from": ["exercises_db.csv (name, target, difficulty)", "your injuries list"],
     }
 
 
