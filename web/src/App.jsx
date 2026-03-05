@@ -436,6 +436,7 @@ export default function App() {
     intensity: 3,
   })
   const [daysMenuOpen, setDaysMenuOpen] = useState(false)
+  const [equipmentMenuOpen, setEquipmentMenuOpen] = useState(false)
   const [equipmentSearch, setEquipmentSearch] = useState('')
   const [injuryMap, setInjuryMap] = useState(DEFAULT_JOINT_MUSCLE_MAP)
   const [equipmentOptions, setEquipmentOptions] = useState(DEFAULT_EQUIPMENT_OPTIONS)
@@ -443,6 +444,7 @@ export default function App() {
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
   const daySelectRef = useRef(null)
+  const equipmentSelectRef = useRef(null)
   const dayTabRefs = useRef({})
 
   useEffect(() => {
@@ -568,8 +570,20 @@ export default function App() {
   }, [daysMenuOpen])
 
   useEffect(() => {
+    if (!equipmentMenuOpen) return undefined
+    const onDocPointerDown = (event) => {
+      if (!equipmentSelectRef.current?.contains(event.target)) {
+        setEquipmentMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocPointerDown)
+    return () => document.removeEventListener('mousedown', onDocPointerDown)
+  }, [equipmentMenuOpen])
+
+  useEffect(() => {
     if (!profileEdit) {
       setDaysMenuOpen(false)
+      setEquipmentMenuOpen(false)
       setEquipmentSearch('')
     }
   }, [profileEdit])
@@ -689,10 +703,10 @@ export default function App() {
     () => Array.from(new Set([...equipmentOptions, ...normalizedDraftEquipment])),
     [equipmentOptions, normalizedDraftEquipment],
   )
-  const filteredEquipmentChips = useMemo(() => {
-    const q = String(equipmentSearch || '').trim().toLowerCase()
-    if (!q) return equipmentChipOptions
-    return equipmentChipOptions.filter((item) => item.toLowerCase().includes(q))
+  const filteredEquipmentOptions = useMemo(() => {
+    const query = String(equipmentSearch || '').trim().toLowerCase()
+    if (!query) return equipmentChipOptions
+    return equipmentChipOptions.filter((item) => item.includes(query))
   }, [equipmentChipOptions, equipmentSearch])
 
   const applyServerPlanPayload = (data, preferredDay = null) => {
@@ -1420,37 +1434,6 @@ export default function App() {
                 onChange={(e) => setOnboardingDraft((p) => ({ ...p, intensity: normalizeIntensityValue(e.target.value, p.intensity) }))}
               />
 
-              <label>Equipment</label>
-              <div className="injury-filter-grid">
-                <div className="injury-filter-group">
-                  <p className="injury-filter-title">Equipment</p>
-                  <input
-                    type="text"
-                    className="equipment-search-input"
-                    placeholder="Search equipment..."
-                    value={equipmentSearch}
-                    onChange={(e) => setEquipmentSearch(e.target.value)}
-                    aria-label="Filter equipment"
-                  />
-                  <div className="chips equipment-chips-scroll">
-                    {filteredEquipmentChips.map((equipment) => (
-                      <button
-                        key={equipment}
-                        type="button"
-                        className={`chip ${selectedEquipmentSet.has(equipment) ? 'chip-active' : ''}`}
-                        onClick={() => toggleEquipmentPreference(equipment)}
-                      >
-                        {toTitleCase(equipment)}
-                      </button>
-                    ))}
-                  </div>
-                  {filteredEquipmentChips.length === 0 && (
-                    <p className="muted small">No equipment match. Clear search or try another term.</p>
-                  )}
-                  <p className="muted small">Leave empty for any equipment</p>
-                </div>
-              </div>
-
               <label>Injury filters</label>
               <div className="injury-filter-grid">
                 <div className="injury-filter-group">
@@ -1482,6 +1465,83 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                </div>
+              </div>
+
+              <label>Equipment preferences</label>
+              <div className="injury-filter-grid">
+                <div className="injury-filter-group">
+                  <p className="injury-filter-title">Choose available equipment</p>
+                  <div className="equipment-select" ref={equipmentSelectRef}>
+                    <button
+                      type="button"
+                      className="equipment-select-trigger"
+                      aria-haspopup="listbox"
+                      aria-expanded={equipmentMenuOpen}
+                      onClick={() => setEquipmentMenuOpen((open) => !open)}
+                    >
+                      <span>
+                        {normalizedDraftEquipment.length
+                          ? `${normalizedDraftEquipment.length} selected`
+                          : 'Select equipment'}
+                      </span>
+                      <span className="day-select-chevron" aria-hidden="true">▾</span>
+                    </button>
+
+                    {equipmentMenuOpen && (
+                      <div className="equipment-select-menu" role="listbox" aria-label="Equipment preferences">
+                        <input
+                          type="text"
+                          className="equipment-search-input"
+                          value={equipmentSearch}
+                          placeholder="Search equipment..."
+                          onChange={(e) => setEquipmentSearch(e.target.value)}
+                        />
+                        <div className="equipment-option-list">
+                          {filteredEquipmentOptions.length === 0 ? (
+                            <p className="equipment-empty">No equipment found.</p>
+                          ) : (
+                            filteredEquipmentOptions.map((equipment) => (
+                              <button
+                                key={equipment}
+                                type="button"
+                                role="option"
+                                aria-selected={selectedEquipmentSet.has(equipment)}
+                                className={`equipment-option ${selectedEquipmentSet.has(equipment) ? 'selected' : ''}`}
+                                onClick={() => toggleEquipmentPreference(equipment)}
+                              >
+                                <span className="day-select-option-check" aria-hidden="true">
+                                  {selectedEquipmentSet.has(equipment) ? '✓' : ''}
+                                </span>
+                                <span>{toTitleCase(equipment)}</span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="equipment-bubbles">
+                    {normalizedDraftEquipment.length === 0 ? (
+                      <p className="muted small">No equipment selected (any allowed).</p>
+                    ) : (
+                      normalizedDraftEquipment.map((equipment) => (
+                        <span key={equipment} className="equipment-bubble">
+                          <span>{toTitleCase(equipment)}</span>
+                          <button
+                            type="button"
+                            className="equipment-bubble-clear"
+                            aria-label={`Remove ${equipment}`}
+                            onClick={() => toggleEquipmentPreference(equipment)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  <p className="muted small">Leave empty to allow any equipment. You can also update this by chat.</p>
                 </div>
               </div>
 
