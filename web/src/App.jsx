@@ -1218,15 +1218,22 @@ export default function App() {
           'Explain what changed and why with a focus on safety constraints.',
         ].join('\n')
         try {
-          const assistantReply = await requestAssistantChat(
+          const chatPayload = await requestAssistantChat(
             id,
             prompt,
             planSummary,
             krrSummary,
             payload?.selected_day || selectedDay,
           )
-          if (assistantReply) {
-            setChatMessages((prev) => [...prev, { role: 'assistant', text: assistantReply }])
+          if (chatPayload?.response) {
+            setChatMessages((prev) => [...prev, {
+              role: 'assistant',
+              text: chatPayload.response,
+              ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+              ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+              ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+              ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+            }])
           }
         } catch {
           // Keep profile save successful even if explanation call fails.
