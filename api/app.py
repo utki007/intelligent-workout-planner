@@ -33,6 +33,7 @@ from agent.krr import (
     JOINT_MUSCLE_MAP,
     MUSCLE_ALIASES,
     MUSCLE_GROUP_EXPANSIONS,
+    build_global_krr_reasoning,
     get_krr_logic_summary,
     load_kb,
     normalize_equipment_preferences,
@@ -270,11 +271,14 @@ class ChatIn(BaseModel):
     plan_summary: str | None = None
     krr_summary: str | None = None
     selected_day: str | None = None
+    include_explanation: bool = False
+    plan_only_response: bool = False
 
 
 class ChatOut(BaseModel):
     response: str
     krr_logic: dict | None = None
+    krr_reasoning: str | None = None
     llm_explanation: str | None = None
     llm_grounding_confidence: Literal["high", "partial", "interpretive"] | None = None
 
@@ -1695,13 +1699,7 @@ def get_explanation(
 
     skipped = "All exercises for this day target injured muscles." if not exercises else None
     llm = LLM()
-    llm_explanation = llm.explain_plan(
-        user_id=user_id,
-        day=day,
-        exercises=exercises,
-        skipped_reason=skipped,
-        krr_reasoning=day_krr or None,
-    )
+    llm_explanation = llm.explain_krr_reasoning(krr_logic, day_krr or None)
     logger.info(
         "explanation.get user_id=%s day=%s exercises=%s has_krr=%s has_krr_logic=%s llm_chars=%s",
         user_id,
@@ -1912,10 +1910,11 @@ def chat(body: ChatIn):
             )
             return ChatOut(response=schedule_reply)
 
-    if _is_explanation_query(body.message):
+    if _is_explanation_query(body.message) or body.include_explanation:
         injuries = prof.get("injury_muscles", []) or []
         equipment = prof.get("equipment_preferences", []) or []
         krr_logic = None
+        krr_reasoning = None
         try:
             df = get_exercises_df()
             load_kb(df, user_id, injuries, equipment_preferences=equipment)
@@ -1925,6 +1924,12 @@ def chat(body: ChatIn):
                 equipment_preferences=equipment,
                 day_label=body.selected_day,
                 day_theme_muscles=[],
+            )
+            krr_reasoning = build_global_krr_reasoning(
+                user_id=user_id,
+                injury_muscles=injuries,
+                equipment_preferences=equipment,
+                krr_logic=krr_logic,
             )
         except Exception:
             logger.exception("chat.explanation kb_load_error user_id=%s", user_id)
@@ -1946,9 +1951,16 @@ def chat(body: ChatIn):
             has_saved_plan=has_saved_plan,
             grounded_constraints=grounded_constraints,
             explanation_why=True,
+            plan_only_response=body.plan_only_response,
         )
         append_chat_turn_to_profile(user_id, body.message, expl_reply)
         confidence = "high" if krr_logic and grounded_constraints else "interpretive"
+        llm_reasoning = None
+        if krr_logic or krr_reasoning:
+            try:
+                llm_reasoning = llm.explain_krr_reasoning(krr_logic, krr_reasoning)
+            except Exception:
+                logger.exception("chat.explanation llm_reasoning_error user_id=%s", user_id)
         logger.info(
             "chat.explanation user_id=%s has_krr_logic=%s confidence=%s",
             user_id,
@@ -1958,7 +1970,8 @@ def chat(body: ChatIn):
         return ChatOut(
             response=expl_reply,
             krr_logic=krr_logic,
-            llm_explanation=expl_reply,
+            krr_reasoning=krr_reasoning,
+            llm_explanation=llm_reasoning,
             llm_grounding_confidence=confidence,
         )
 

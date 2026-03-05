@@ -405,7 +405,7 @@ export default function App() {
     policy: true,
     llm: true,
   })
-  const [defaultExplanationView, setDefaultExplanationView] = useState('llm') // 'krr' | 'llm'
+  const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
   const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
   const [toasts, setToasts] = useState([])
   const toastTimersRef = useRef({})
@@ -690,8 +690,6 @@ export default function App() {
     return equipmentChipOptions.filter((item) => item.includes(query))
   }, [equipmentChipOptions, equipmentSearch])
 
-  const statusText = chatLoading ? (chatActivity || '') : ''
-
   const applyServerPlanPayload = (data, preferredDay = null) => {
     if (!data?.plan || typeof data.plan !== 'object') return null
     const planPack = {
@@ -843,7 +841,7 @@ export default function App() {
     }
   }
 
-  const requestAssistantChat = async (id, msg, planSummaryOverride = null, krrSummaryOverride = null, selectedDayOverride = null) => {
+  const requestAssistantChat = async (id, msg, planSummaryOverride = null, krrSummaryOverride = null, selectedDayOverride = null, options = {}) => {
     const planSummary = planSummaryOverride ?? (
       activePlan
         ? sortedDayLabelsFromPlan(activePlan.plan)
@@ -867,6 +865,8 @@ export default function App() {
         plan_summary: planSummary,
         krr_summary: krrSummary,
         selected_day: selectedDayOverride ?? selectedDay ?? null,
+        include_explanation: options.include_explanation ?? false,
+        plan_only_response: options.plan_only_response ?? false,
       }),
     })
     const requestId = res.headers.get('X-Request-ID')
@@ -917,7 +917,14 @@ export default function App() {
           let assistantReply = intent.assistant_reply || 'Your plan is ready. I have applied it to your weekly view.'
           let chatPayload = null
           try {
-            chatPayload = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+            chatPayload = await requestAssistantChat(
+              id,
+              msg,
+              planSummary,
+              krrSummary,
+              selected,
+              { include_explanation: true, plan_only_response: true },
+            )
             assistantReply = chatPayload?.response ?? assistantReply
           } catch {
             // Fall back to deterministic copy while still publishing the generated plan.
@@ -926,9 +933,10 @@ export default function App() {
             role: 'assistant',
             text: assistantReply,
             ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
           publishPlan(generated, null)
         }
@@ -993,9 +1001,10 @@ export default function App() {
             role: 'assistant',
             text: assistantText,
             ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         } else {
           const chatPayload = await requestAssistantChat(id, msg)
@@ -1005,9 +1014,10 @@ export default function App() {
             role: 'assistant',
             text: assistantText,
             ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         }
         return
@@ -1019,9 +1029,10 @@ export default function App() {
         role: 'assistant',
         text: assistantReply,
         ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+        ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
         ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
         ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-        ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+        ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
       }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
@@ -1535,19 +1546,12 @@ export default function App() {
           </div>
         </div>
 
-          {Boolean(statusText) && (
-            <div className="status-strip">
-              <span className="pulse-dot" />
-              <span>{statusText}</span>
-            </div>
-          )}
-
         <div className="chat-zone">
           {chatMessages.map((m, idx) => (
             <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
               {(() => {
                 const text = String(m.text || '')
-                const hasExplanation = Boolean(m.krr_logic || m.llm_explanation)
+                const hasExplanation = Boolean(m.krr_reasoning || m.llm_explanation || m.krr_logic)
                 const explView = messageExplanationView[idx] ?? m.explanationView ?? defaultExplanationView
                 const lineBreaks = (text.match(/\n/g) || []).length
                 const isLongAssistantReply = m.role === 'assistant' && !hasExplanation && (text.length > 900 || lineBreaks > 14)
@@ -1571,7 +1575,7 @@ export default function App() {
                             {isExpanded ? 'Show less' : 'Show more'}
                           </button>
                         )}
-                        {(m.llm_explanation || m.krr_logic) && (
+                        {(m.llm_explanation || m.krr_reasoning || m.krr_logic) && (
                           <>
                             <div className="msg-explanation-toggle-row" role="group" aria-label="Reasoning view">
                               {m.llm_explanation && (
@@ -1588,7 +1592,7 @@ export default function App() {
                                   {explView === 'llm' ? 'Hide LLM reasoning' : 'Show LLM reasoning'}
                                 </button>
                               )}
-                              {m.krr_logic && (
+                              {m.krr_reasoning && (
                                 <button
                                   type="button"
                                   className={`msg-explanation-btn ${explView === 'krr' ? 'active' : ''}`}
@@ -1610,10 +1614,10 @@ export default function App() {
                                 </ReactMarkdown>
                               </div>
                             )}
-                            {explView === 'krr' && m.krr_logic && (
+                            {explView === 'krr' && m.krr_reasoning && (
                               <div className="msg-body msg-krr-view">
                                 <pre className="krr-structured-block">
-                                  {formatKrrLogicFromStructured(m.krr_logic)}
+                                  {m.krr_reasoning}
                                 </pre>
                               </div>
                             )}
@@ -1682,8 +1686,8 @@ export default function App() {
               <span className="explanation-toggle-label">KRR reasoning panel:</span>
               <button
                 type="button"
-                className={`explanation-default-btn ${defaultExplanationView === 'llm' ? 'active' : ''}`}
-                onClick={() => setDefaultExplanationView('llm')}
+                className={`explanation-default-btn ${defaultExplanationView === 'none' ? 'active' : ''}`}
+                onClick={() => setDefaultExplanationView('none')}
               >
                 Hidden
               </button>
@@ -1855,9 +1859,13 @@ export default function App() {
                       </div>
                       <div className="boundary-section llm-interpretation">
                         <h5 className="boundary-heading">LLM INTERPRETATION</h5>
-                        <p className="muted small">Volume distribution rationale; Recovery reasoning.</p>
+                        <p className="muted small">Translation of the symbolic decisions above into human-readable reasoning.</p>
                       </div>
-                      <p className="boundary-how">{drawerData.krr_logic.how_avoidance}</p>
+                      <p className="boundary-how">
+                        {drawerData.llm_explanation
+                          ? clip(drawerData.llm_explanation, 400)
+                          : drawerData.krr_logic.how_avoidance}
+                      </p>
                       <details className="reason-raw">
                         <summary>View raw symbolic trace</summary>
                         <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>

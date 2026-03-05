@@ -344,6 +344,68 @@ def get_krr_logic_summary(
     }
 
 
+def build_global_krr_reasoning(
+    user_id: str,
+    injury_muscles: list[str],
+    equipment_preferences: list[str] | None,
+    krr_logic: dict[str, Any] | None,
+) -> str:
+    """
+    Build a global KRR-style reasoning trace for the user's constraints.
+
+    This is intentionally \"symbolic\" in flavor: it restates the facts,
+    rules, and inference steps that the pyDatalog program applies, with
+    counts taken from the structured krr_logic summary.
+    """
+    injuries_norm = sorted(normalize_injury_muscles(injury_muscles))
+    equipment_norm = sorted(normalize_equipment_preferences(equipment_preferences))
+
+    injuries_line = (
+        f"{user_id} has injured_muscle({user_id}, M) for M in {{{', '.join(injuries_norm)}}}"
+        if injuries_norm
+        else f"{user_id} has no injured_muscle facts (no injury-based filter)."
+    )
+    if equipment_norm:
+        equipment_line = (
+            f"{user_id} has preferred_equipment({user_id}, Eq) for Eq in "
+            f"{{{', '.join(equipment_norm)}}}."
+        )
+    else:
+        equipment_line = (
+            f"{user_id} has no preferred_equipment facts (equipment filter disabled; "
+            "body weight always allowed)."
+        )
+
+    forbidden_count = int(krr_logic.get("forbidden_count", 0)) if krr_logic else 0
+    allowed_count = int(krr_logic.get("allowed_exercises_count", 0)) if krr_logic else 0
+    pipeline = krr_logic.get("constraint_pipeline", list(CONSTRAINT_PIPELINE)) if krr_logic else list(
+        CONSTRAINT_PIPELINE
+    )
+    how_avoidance = str(krr_logic.get("how_avoidance", "")).strip() if krr_logic else ""
+
+    lines: list[str] = [
+        "Facts:",
+        "  (from exercise DB) is_exercise(E), trains_muscle(E, M), has_difficulty(E, D), uses_equipment(E, Eq).",
+        f"  (from user) {injuries_line}",
+        f"  (from user) {equipment_line}",
+        "",
+        "Rules:",
+        "  forbidden(User, Exercise) <- trains_muscle(Exercise, M) & injured_muscle(User, M).",
+        "  equipment_allowed(User, Exercise) <- preferred_equipment(User, Eq) & uses_equipment(Exercise, Eq).",
+        "  equipment_allowed(User, Exercise) <- uses_equipment(Exercise, body weight).",
+        "  recommended(User, Exercise) <- is_exercise(Exercise) & has_difficulty(Exercise, beginner)",
+        "    & ~forbidden(User, Exercise) and (no preferred equipment OR equipment_allowed(User, Exercise)).",
+        "",
+        "Inference (global constraints):",
+        f"  Constraint pipeline: {' -> '.join(pipeline)}.",
+        f"  forbidden_count = {forbidden_count} exercise(s) excluded due to injury filter.",
+        f"  allowed_exercises_count = {allowed_count} beginner exercise(s) remain after applying all constraints.",
+    ]
+    if how_avoidance:
+        lines.append(f"  Narrative summary: {how_avoidance}")
+    return "\n".join(lines)
+
+
 def get_krr_reasoning(
     user_id: str,
     day_label: str,
