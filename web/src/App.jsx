@@ -44,12 +44,68 @@ function dayNumber(label) {
   return m ? Number(m[0]) : 0
 }
 
+function normalizeDayToken(label) {
+  return String(label || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+}
+
 function formatDayLabel(label) {
   return String(label || '').replace(/^Day(\d+)$/i, 'Day $1')
 }
 
 function sortedDayLabelsFromPlan(plan) {
   return Object.keys(plan || {}).sort((a, b) => dayNumber(a) - dayNumber(b))
+}
+
+function resolveDayLabel(labels, preferred) {
+  const requested = normalizeDayToken(preferred)
+  if (!requested) return labels[0] || null
+  const exact = labels.find((label) => normalizeDayToken(label) === requested)
+  return exact || labels[0] || null
+}
+
+function normalizedExerciseNamesByDay(plan) {
+  const out = {}
+  for (const day of sortedDayLabelsFromPlan(plan || {})) {
+    const names = (plan?.[day] || [])
+      .map((ex) => String(ex?.name || '').trim().toLowerCase())
+      .filter(Boolean)
+    out[day] = Array.from(new Set(names))
+  }
+  return out
+}
+
+function summarizePlanExerciseChanges(previousPlan, nextPlan) {
+  if (!previousPlan || !nextPlan) return 'No plan diff available.'
+  const prevByDay = normalizedExerciseNamesByDay(previousPlan)
+  const nextByDay = normalizedExerciseNamesByDay(nextPlan)
+  const dayLabels = Array.from(new Set([...Object.keys(prevByDay), ...Object.keys(nextByDay)]))
+    .sort((a, b) => dayNumber(a) - dayNumber(b))
+
+  const lines = []
+  for (const day of dayLabels) {
+    const prev = prevByDay[day] || []
+    const next = nextByDay[day] || []
+    const added = next.filter((name) => !prev.includes(name))
+    const removed = prev.filter((name) => !next.includes(name))
+    if (!added.length && !removed.length) continue
+    lines.push(
+      `${day}: added [${added.slice(0, 8).join(', ') || 'none'}]; removed [${removed.slice(0, 8).join(', ') || 'none'}]`,
+    )
+    if (lines.length >= 6) break
+  }
+  if (!lines.length) return 'No exercise-name changes detected.'
+  return lines.join('\n')
+}
+
+function summarizeUpdateReasons(updates) {
+  const reasons = []
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'days_per_week')) reasons.push(`days/week=${updates.days_per_week}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'injury_muscles')) reasons.push(`injuries=${(updates.injury_muscles || []).join(', ') || 'none'}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'equipment_preferences')) reasons.push(`equipment=${(updates.equipment_preferences || []).join(', ') || 'none'}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'intensity')) reasons.push(`intensity=${updates.intensity}`)
+  return reasons.join('; ') || 'profile constraints updated'
 }
 
 function clip(text, n = 120) {
@@ -73,6 +129,26 @@ function extractQuotedValues(text) {
     m = re.exec(text)
   }
   return values
+}
+
+function formatKrrLogicFromStructured(krrLogic) {
+  if (!krrLogic || typeof krrLogic !== 'object') return null
+  const inj = krrLogic.injuries || []
+  const eq = krrLogic.equipment || []
+  const pipeline = krrLogic.constraint_pipeline || []
+  const forbiddenCount = krrLogic.forbidden_count ?? 0
+  const allowedCount = krrLogic.allowed_exercises_count ?? 0
+  const how = krrLogic.how_avoidance || ''
+  const themeAdjusted = krrLogic.theme_adjusted_due_to_injury
+  const parts = []
+  parts.push(`Injuries (avoided): ${inj.length ? inj.map(toTitleCase).join(', ') : 'none'}`)
+  parts.push(`Equipment (used): ${eq.length ? eq.map(toTitleCase).join(', ') : 'any'}`)
+  if (pipeline.length) parts.push(`Constraint order: ${pipeline.join(' → ')}`)
+  if (forbiddenCount > 0) parts.push(`${forbiddenCount} exercise(s) excluded (forbidden)`)
+  parts.push(`${allowedCount} exercise(s) in pool after constraints`)
+  if (themeAdjusted) parts.push('Theme adjusted due to conflict with injury')
+  parts.push(how)
+  return parts.join('\n')
 }
 
 function parseSymbolicSummary(reasoningText) {
@@ -300,6 +376,25 @@ function IconSearch() {
   )
 }
 
+function IconCode() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="m8 18-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m16 6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconBrain() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -329,6 +424,8 @@ export default function App() {
     policy: true,
     llm: true,
   })
+  const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
+  const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
   const [toasts, setToasts] = useState([])
   const toastTimersRef = useRef({})
 
@@ -612,17 +709,59 @@ export default function App() {
     return equipmentChipOptions.filter((item) => item.includes(query))
   }, [equipmentChipOptions, equipmentSearch])
 
-  const statusText = chatLoading ? (chatActivity || '') : ''
+  const applyServerPlanPayload = (data, preferredDay = null) => {
+    if (!data?.plan || typeof data.plan !== 'object') return null
+    const planPack = {
+      plan: data.plan || {},
+      krr_reasoning: data.krr_reasoning || {},
+      day_themes: data.day_themes || {},
+      day_theme_muscles: data.day_theme_muscles || {},
+      evaluation_ok: data.evaluation_ok,
+      suggestions: data.suggestions || [],
+      requestId: data.requestId || null,
+      createdAt: new Date().toISOString(),
+    }
+    setActivePlan(planPack)
+    const labels = sortedDayLabelsFromPlan(planPack.plan)
+    setSelectedDay(resolveDayLabel(labels, preferredDay ?? selectedDay))
+    return planPack
+  }
 
-  const saveProfile = async (updates) => {
+  const saveProfile = async (updates, options = {}) => {
     const id = (userId || '').trim()
-    if (!id) return
-    await fetch(`${API}/profile`, {
+    if (!id) return null
+    const res = await fetch(`${API}/profile`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: id, ...updates }),
+      body: JSON.stringify({
+        user_id: id,
+        ...updates,
+        selected_day: options.selectedDay ?? selectedDay ?? null,
+        auto_update_plan: options.autoUpdatePlan ?? true,
+      }),
     })
-    setProfile((prev) => ({ ...prev, ...updates }))
+    const requestId = res.headers.get('X-Request-ID')
+    if (requestId) setLastRequestId(requestId)
+    if (!res.ok) throw new Error(await res.text())
+    const payload = await res.json()
+    const normalizedIntensity = normalizeIntensityValue(payload?.profile?.intensity, normalizeIntensityValue(updates.intensity, profile.intensity))
+    if (payload?.profile && typeof payload.profile === 'object') {
+      setProfile({
+        ...DEFAULT_PROFILE,
+        ...payload.profile,
+        intensity: normalizedIntensity,
+      })
+    } else {
+      setProfile((prev) => ({
+        ...prev,
+        ...updates,
+        intensity: normalizeIntensityValue(updates.intensity, prev.intensity),
+      }))
+    }
+    if (payload?.plan_updated && payload?.plan) {
+      applyServerPlanPayload(payload, options.selectedDay ?? selectedDay ?? null)
+    }
+    return payload
   }
 
   const resolveIntent = async (id, message) => {
@@ -664,7 +803,7 @@ export default function App() {
     return { ...data, requestId }
   }
 
-  const publishPlan = (data, assistantText = null) => {
+  const publishPlan = (data, assistantText = null, preferredDay = null) => {
     const planPack = {
       plan: data.plan || {},
       krr_reasoning: data.krr_reasoning || {},
@@ -678,7 +817,7 @@ export default function App() {
 
     setActivePlan(planPack)
     const labels = sortedDayLabelsFromPlan(planPack.plan)
-    setSelectedDay(labels[0] || null)
+    setSelectedDay(resolveDayLabel(labels, preferredDay))
 
     if (assistantText) {
       setChatMessages((prev) => [
@@ -721,7 +860,7 @@ export default function App() {
     }
   }
 
-  const requestAssistantChat = async (id, msg, planSummaryOverride = null, krrSummaryOverride = null, selectedDayOverride = null) => {
+  const requestAssistantChat = async (id, msg, planSummaryOverride = null, krrSummaryOverride = null, selectedDayOverride = null, options = {}) => {
     const planSummary = planSummaryOverride ?? (
       activePlan
         ? sortedDayLabelsFromPlan(activePlan.plan)
@@ -745,13 +884,15 @@ export default function App() {
         plan_summary: planSummary,
         krr_summary: krrSummary,
         selected_day: selectedDayOverride ?? selectedDay ?? null,
+        include_explanation: options.include_explanation ?? false,
+        plan_only_response: options.plan_only_response ?? false,
       }),
     })
     const requestId = res.headers.get('X-Request-ID')
     if (requestId) setLastRequestId(requestId)
     if (!res.ok) throw new Error(await res.text())
     const data = await res.json()
-    return data.response || 'No response.'
+    return data
   }
 
   const sendChat = async (textOverride = null) => {
@@ -772,7 +913,7 @@ export default function App() {
 
       if (intent.intent === 'generate_plan') {
         if (hasPersistableUpdates) {
-          await saveProfile(persistableInferred)
+          await saveProfile(persistableInferred, { autoUpdatePlan: false })
           setOnboardingDraft((prev) => ({
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
@@ -793,14 +934,28 @@ export default function App() {
           const krrSummary = Object.entries(generated.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
           setChatActivity('Finalizing your response...')
           let assistantReply = intent.assistant_reply || 'Your plan is ready. I have applied it to your weekly view.'
+          let chatPayload = null
           try {
-            assistantReply = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+            chatPayload = await requestAssistantChat(
+              id,
+              msg,
+              planSummary,
+              krrSummary,
+              selected,
+              { include_explanation: true, plan_only_response: true },
+            )
+            assistantReply = chatPayload?.response ?? assistantReply
           } catch {
             // Fall back to deterministic copy while still publishing the generated plan.
           }
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantReply,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
           publishPlan(generated, null)
         }
@@ -808,10 +963,13 @@ export default function App() {
       }
 
       if (intent.intent === 'profile_update') {
-        const fallbackReply = await requestAssistantChat(id, msg)
-        const assistantText = intent.assistant_reply || fallbackReply
+        const previousPlanSnapshot = activePlan?.plan ? JSON.parse(JSON.stringify(activePlan.plan)) : null
         if (hasPersistableUpdates) {
-          await saveProfile(persistableInferred)
+          setChatActivity('Applying dynamic profile update to your plan...')
+          const savePayload = await saveProfile(persistableInferred, {
+            autoUpdatePlan: true,
+            selectedDay,
+          })
           setOnboardingDraft((prev) => ({
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
@@ -819,22 +977,82 @@ export default function App() {
             equipment: persistableInferred.equipment_preferences ?? prev.equipment,
             intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
           }))
-          pushToast('success', 'Profile updated.')
+          if (savePayload?.plan_updated && savePayload?.update_mode === 'remaining') {
+            pushToast('success', 'Profile updated. Remaining days were refreshed automatically.')
+          } else if (savePayload?.plan_updated && savePayload?.update_mode === 'full') {
+            pushToast('success', 'Profile updated. The weekly plan was regenerated automatically.')
+          } else {
+            pushToast('success', 'Profile updated.')
+          }
+          const planSummary = savePayload?.plan
+            ? sortedDayLabelsFromPlan(savePayload.plan)
+              .map((d) => `${d}: ${(savePayload.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+              .join('; ')
+            : null
+          const krrSummary = savePayload?.krr_reasoning
+            ? Object.entries(savePayload.krr_reasoning).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+            : null
+          const changeSummary = savePayload?.plan_updated && previousPlanSnapshot && savePayload?.plan
+            ? summarizePlanExerciseChanges(previousPlanSnapshot, savePayload.plan)
+            : 'No automatic plan update occurred.'
+          const reasonsSummary = summarizeUpdateReasons(persistableInferred)
+          const followUpPrompt = [
+            msg,
+            '',
+            'Dynamic update context:',
+            `Profile changes applied: ${reasonsSummary}`,
+            `Exercise changes:\n${changeSummary}`,
+            'Please explain what changed and why, referencing injury/equipment/intensity/day-count constraints when relevant.',
+          ].join('\n')
+          setChatActivity(savePayload?.plan_updated
+            ? 'Dynamic update applied. Explaining what changed...'
+            : 'Profile saved. Preparing response...')
+          const chatPayload = await requestAssistantChat(
+            id,
+            followUpPrompt,
+            planSummary,
+            krrSummary,
+            savePayload?.selected_day || selectedDay,
+          )
+          const replyText = chatPayload?.response ?? ''
+          const assistantText = savePayload?.plan_updated ? replyText : (intent.assistant_reply || replyText)
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         } else {
+          const chatPayload = await requestAssistantChat(id, msg)
+          const replyText = chatPayload?.response ?? ''
+          const assistantText = intent.assistant_reply || replyText
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         }
         return
       }
 
-      const assistantReply = await requestAssistantChat(id, msg)
-      setChatMessages((prev) => [...prev, { role: 'assistant', text: assistantReply }])
+      const chatPayload = await requestAssistantChat(id, msg)
+      const assistantReply = chatPayload?.response ?? 'No response.'
+      setChatMessages((prev) => [...prev, {
+        role: 'assistant',
+        text: assistantReply,
+        ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+        ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+        ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+        ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+        ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+      }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
@@ -987,16 +1205,67 @@ export default function App() {
     const id = (userId || '').trim()
     if (!id) {
       pushToast('error', 'Profile unavailable. Refresh and try again.')
-      return
+      return false
     }
-    await saveProfile({
+    setChatLoading(true)
+    setChatActivity('Applying dynamic profile update to your plan...')
+    const updates = {
       onboarding_complete: true,
       days_per_week: onboardingDraft.days,
       injury_muscles: onboardingDraft.injuries,
       equipment_preferences: onboardingDraft.equipment,
       intensity: normalizeIntensityValue(onboardingDraft.intensity, 3),
-    })
-    pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
+    }
+    const previousPlanSnapshot = activePlan?.plan ? JSON.parse(JSON.stringify(activePlan.plan)) : null
+    try {
+      const payload = await saveProfile(updates, { autoUpdatePlan: true, selectedDay })
+      pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
+      if (payload?.plan_updated && payload?.plan) {
+        setChatActivity('Dynamic update applied. Explaining what changed...')
+        const planSummary = sortedDayLabelsFromPlan(payload.plan)
+          .map((d) => `${d}: ${(payload.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+          .join('; ')
+        const krrSummary = Object.entries(payload.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+        const changeSummary = previousPlanSnapshot
+          ? summarizePlanExerciseChanges(previousPlanSnapshot, payload.plan)
+          : 'A new plan was created using the latest profile constraints.'
+        const reasonsSummary = summarizeUpdateReasons(updates)
+        const prompt = [
+          'I updated my training profile and the plan auto-refreshed.',
+          `Profile changes applied: ${reasonsSummary}`,
+          `Exercise changes:\n${changeSummary}`,
+          'Explain what changed and why with a focus on safety constraints.',
+        ].join('\n')
+        try {
+          const chatPayload = await requestAssistantChat(
+            id,
+            prompt,
+            planSummary,
+            krrSummary,
+            payload?.selected_day || selectedDay,
+          )
+          if (chatPayload?.response) {
+            setChatMessages((prev) => [...prev, {
+              role: 'assistant',
+              text: chatPayload.response,
+              ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+              ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
+              ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+              ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+            }])
+          }
+        } catch {
+          // Keep profile save successful even if explanation call fails.
+        }
+      }
+      return true
+    } catch (e) {
+      pushToast('error', `Save profile failed: ${e.message || 'Unknown error'}`)
+      return false
+    } finally {
+      setChatLoading(false)
+      setChatActivity('')
+    }
   }
 
   const safeIntensity = normalizeIntensityValue(profile.intensity, 3)
@@ -1280,8 +1549,9 @@ export default function App() {
                 type="button"
                 className="btn btn-primary"
                 onClick={async () => {
-                  await completeOnboarding()
                   setProfileEdit(false)
+                  const ok = await completeOnboarding()
+                  if (!ok) setProfileEdit(true)
                 }}
               >
                 Save profile
@@ -1302,37 +1572,107 @@ export default function App() {
           </div>
         </div>
 
-          {Boolean(statusText) && (
-            <div className="status-strip">
-              <span className="pulse-dot" />
-              <span>{statusText}</span>
-            </div>
-          )}
-
         <div className="chat-zone">
           {chatMessages.map((m, idx) => (
             <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
               {(() => {
                 const text = String(m.text || '')
+                const hasExplanation = Boolean(m.krr_reasoning || m.llm_explanation || m.krr_logic)
+                const explView = messageExplanationView[idx] ?? m.explanationView ?? defaultExplanationView
                 const lineBreaks = (text.match(/\n/g) || []).length
-                const isLongAssistantReply = m.role === 'assistant' && (text.length > 900 || lineBreaks > 14)
+                const isLongAssistantReply = m.role === 'assistant' && !hasExplanation && (text.length > 900 || lineBreaks > 14)
                 const isExpanded = Boolean(expandedMsg[idx])
                 return (
                   <>
                     {m.role !== 'system' && <p className="msg-role">{m.role === 'user' ? '🧑 You' : '🤖 Coach AI'}</p>}
-                    <div className={`msg-body markdown-body ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {text}
-                      </ReactMarkdown>
-                    </div>
-                    {isLongAssistantReply && (
-                      <button
-                        type="button"
-                        className="msg-expand"
-                        onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
-                      >
-                        {isExpanded ? 'Show less' : 'Show more'}
-                      </button>
+                    {hasExplanation && m.role === 'assistant' ? (
+                      <div className="msg-explanation-wrap">
+                        <div className={`msg-body markdown-body msg-llm-view ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {text}
+                          </ReactMarkdown>
+                        </div>
+                        {isLongAssistantReply && (
+                          <button
+                            type="button"
+                            className="msg-expand"
+                            onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                          >
+                            {isExpanded ? 'Show less' : 'Show more'}
+                          </button>
+                        )}
+                        {(m.llm_explanation || m.krr_reasoning || m.krr_logic) && (
+                          <>
+                            <div className="msg-explanation-toggle-row" role="group" aria-label="Reasoning view">
+                              {m.llm_explanation && (
+                                <button
+                                  type="button"
+                                  className={`msg-explanation-btn msg-explanation-btn-llm ${explView === 'llm' ? 'active' : ''}`}
+                                  title="View generative AI reasoning (natural language summary)"
+                                  aria-expanded={explView === 'llm'}
+                                  onClick={() =>
+                                    setMessageExplanationView((prev) => ({
+                                      ...prev,
+                                      [idx]: explView === 'llm' ? 'none' : 'llm',
+                                    }))
+                                  }
+                                >
+                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconBrain /></span>
+                                  {explView === 'llm' ? 'Hide' : 'View'} Generative Reasoning
+                                </button>
+                              )}
+                              {m.krr_reasoning && (
+                                <button
+                                  type="button"
+                                  className={`msg-explanation-btn msg-explanation-btn-krr ${explView === 'krr' ? 'active' : ''}`}
+                                  title="View symbolic logic (facts, rules, inference)"
+                                  aria-expanded={explView === 'krr'}
+                                  onClick={() =>
+                                    setMessageExplanationView((prev) => ({
+                                      ...prev,
+                                      [idx]: explView === 'krr' ? 'none' : 'krr',
+                                    }))
+                                  }
+                                >
+                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconCode /></span>
+                                  {explView === 'krr' ? 'Hide' : 'View'} Symbolic Logic
+                                </button>
+                              )}
+                            </div>
+                            {explView === 'llm' && m.llm_explanation && (
+                              <div className="msg-body markdown-body msg-llm-view">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {m.llm_explanation}
+                                </ReactMarkdown>
+                              </div>
+                            )}
+                            {explView === 'krr' && m.krr_reasoning && (
+                              <div className="msg-body msg-krr-view">
+                                <pre className="krr-structured-block">
+                                  {m.krr_reasoning}
+                                </pre>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className={`msg-body markdown-body ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {text}
+                          </ReactMarkdown>
+                        </div>
+                        {isLongAssistantReply && (
+                          <button
+                            type="button"
+                            className="msg-expand"
+                            onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                          >
+                            {isExpanded ? 'Show less' : 'Show more'}
+                          </button>
+                        )}
+                      </>
                     )}
                   </>
                 )
@@ -1499,7 +1839,7 @@ export default function App() {
             <div className="reason-block safe">
               <div className="reason-head">
                 <div className="reason-head-title">
-                  <h4>Symbolic Rules</h4>
+                  <h4>Symbolic vs Generative Boundary</h4>
                   <span className="confidence-badge confidence-rule">Rule-grounded</span>
                 </div>
                 <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
@@ -1508,30 +1848,68 @@ export default function App() {
               </div>
               {explainSectionsOpen.symbolic && (
                 <div className="reason-content">
-                  {(() => {
-                    const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
-                    return (
-                      <>
-                        <p>✓ Excluded movements violating injury constraints.</p>
-                        {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
-                        {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
-                        {parsed.recommendations.length > 0 && (
-                          <div className="reason-list-wrap">
-                            <p className="muted small">Recommended set</p>
-                            <ul className="reason-list">
-                              {parsed.recommendations.slice(0, 8).map((name) => (
-                                <li key={name}>{toTitleCase(name)}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        <details className="reason-raw">
-                          <summary>View raw symbolic trace</summary>
-                          <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
-                        </details>
-                      </>
-                    )
-                  })()}
+                  {drawerData.krr_logic ? (
+                    <>
+                      <div className="boundary-section symbolic-decisions">
+                        <h5 className="boundary-heading">SYMBOLIC DECISIONS</h5>
+                        <ul className="boundary-list">
+                          <li>✓ Avoided: {drawerData.krr_logic.injuries?.length
+                            ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
+                            : 'none'} (injury)
+                          </li>
+                          <li>✓ Used: {drawerData.krr_logic.equipment?.length
+                            ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
+                            : 'any'} (available equipment)
+                          </li>
+                          <li>✓ Beginner level filter applied</li>
+                          <li>Constraint order: {(drawerData.krr_logic.constraint_pipeline || []).join(' → ')}</li>
+                          <li>{drawerData.krr_logic.forbidden_count ?? 0} exercise(s) excluded (forbidden)</li>
+                          <li>{drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} in pool after constraints</li>
+                          {drawerData.krr_logic.theme_adjusted_due_to_injury && (
+                            <li>Theme adjusted due to conflict with injury</li>
+                          )}
+                        </ul>
+                      </div>
+                      <div className="boundary-section llm-interpretation">
+                        <h5 className="boundary-heading">LLM INTERPRETATION</h5>
+                        <p className="muted small">Translation of the symbolic decisions above into human-readable reasoning.</p>
+                      </div>
+                      <p className="boundary-how">
+                        {drawerData.llm_explanation
+                          ? clip(drawerData.llm_explanation, 400)
+                          : drawerData.krr_logic.how_avoidance}
+                      </p>
+                      <details className="reason-raw">
+                        <summary>View raw symbolic trace</summary>
+                        <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>
+                      </details>
+                    </>
+                  ) : (
+                    (() => {
+                      const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
+                      return (
+                        <>
+                          <p>✓ Excluded movements violating injury constraints.</p>
+                          {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
+                          {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
+                          {parsed.recommendations.length > 0 && (
+                            <div className="reason-list-wrap">
+                              <p className="muted small">Recommended set</p>
+                              <ul className="reason-list">
+                                {parsed.recommendations.slice(0, 8).map((name) => (
+                                  <li key={name}>{toTitleCase(name)}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          <details className="reason-raw">
+                            <summary>View raw symbolic trace</summary>
+                            <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
+                          </details>
+                        </>
+                      )
+                    })()
+                  )}
                 </div>
               )}
             </div>

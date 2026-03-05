@@ -186,6 +186,88 @@ class LLM:
             logger.exception("llm.explain_plan error user_id=%s day=%s", user_id, day)
         return "Explanation unavailable (API error)."
 
+    def explain_krr_reasoning(
+        self,
+        krr_logic: dict | None,
+        krr_reasoning: str | None,
+    ) -> str:
+        """
+        Translate KRR logic + symbolic reasoning into a constrained, human-readable summary.
+
+        This method is intentionally *grounded*: it should not introduce new facts
+        beyond what appears in the KRR inputs. The model is instructed to restate
+        injuries, equipment handling, and exercise counts in plain English.
+        """
+        if not self._client or not self._model:
+            logger.warning("llm.explain_krr_reasoning unavailable model_configured=%s", bool(self._model))
+            return "LLM reasoning unavailable (Azure OpenAI not configured)."
+
+        logic_str = ""
+        if isinstance(krr_logic, dict) and krr_logic:
+            try:
+                logic_str = json.dumps(krr_logic, indent=2, sort_keys=True)[:900]
+            except Exception:
+                logic_str = str(krr_logic)[:900]
+
+        reasoning_snippet = (krr_reasoning or "").strip()[:1400]
+
+        user_content_parts = [
+            "You are translating a KRR (symbolic) workout-planning explanation into plain English.",
+            "The inputs describe which injuries the user has, how equipment preferences are encoded,",
+            "and how many exercises were excluded or allowed by each constraint.",
+            "",
+        ]
+        if logic_str:
+            user_content_parts.append("KRR logic summary (JSON):")
+            user_content_parts.append(logic_str)
+            user_content_parts.append("")
+        if reasoning_snippet:
+            user_content_parts.append("Symbolic KRR reasoning trace:")
+            user_content_parts.append(reasoning_snippet)
+            user_content_parts.append("")
+
+        user_content_parts.append(
+            "Task: In 3–5 short sentences or bullet points, restate ONLY the facts in this KRR context: "
+            "injuries avoided, equipment behavior, forbidden exercise count, and how many exercises remain. "
+            "Do NOT invent any new injuries, muscles, equipment, or exercise names. "
+            "If you add interpretation beyond the raw KRR facts, explicitly label that part as "
+            "\"LLM interpretation\"."
+        )
+        user_content = "\n".join(user_content_parts)
+
+        try:
+            logger.info(
+                "llm.explain_krr_reasoning request has_logic=%s has_reasoning=%s",
+                bool(logic_str),
+                bool(reasoning_snippet),
+            )
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You translate symbolic KRR workout-planning logic into clear, grounded English. "
+                            "Stay strictly faithful to the provided KRR context."
+                        ),
+                    },
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.25,
+                max_tokens=320,
+            )
+            choice = response.choices[0] if response.choices else None
+            if choice and getattr(choice, "message", None):
+                text = (choice.message.content or "").strip()
+                logger.info(
+                    "llm.explain_krr_reasoning success chars=%s",
+                    len(text),
+                )
+                return text
+        except Exception:
+            logger.exception("llm.explain_krr_reasoning error")
+        return "LLM reasoning unavailable (API error)."
+
     def chat(
         self,
         user_message: str,
@@ -194,10 +276,15 @@ class LLM:
         user_id: str | None = None,
         profile_context: str | None = None,
         has_saved_plan: bool | None = None,
+        grounded_constraints: dict | None = None,
+        explanation_why: bool = False,
+        plan_only_response: bool = False,
     ) -> str:
         """
         Respond as the workout agent to a free-form user message (e.g. chat).
         Optionally include current plan, KRR context, and profile constraints for informed answers.
+        When explanation_why=True, pass grounded_constraints and instruct the model to only
+        reference those; label any interpretation beyond them.
         """
         if not self._client or not self._model:
             logger.warning("llm.chat unavailable model_configured=%s", bool(self._model))
@@ -214,6 +301,11 @@ class LLM:
             context.append(f"Current plan summary: {plan_summary[:600]}.")
         if krr_summary:
             context.append(f"Reasoning context: {krr_summary[:400]}.")
+        if grounded_constraints and explanation_why:
+            constraints_str = str(grounded_constraints)[:500]
+            context.append(
+                f"Grounded constraints (you may ONLY reference this; do not invent values): {constraints_str}"
+            )
 
         system = (
             "You are a friendly workout planner agent. You help users understand their weekly plan, "
@@ -228,6 +320,18 @@ class LLM:
             "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
             "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )
+        if plan_only_response:
+            system += (
+                " CRITICAL: Your response must ONLY present the workout plan from the plan summary. "
+                "Do NOT explain why, add reasoning, describe constraints, or include any 'Explanation of Plan Choices' section. "
+                "The reasoning is shown separately in toggles. Keep your reply focused on the plan itself."
+            )
+        elif explanation_why:
+            system += (
+                " This is an explanation request. You may ONLY reference information from grounded_constraints "
+                "when explaining plan choices. If you add any interpretation beyond those constraints, "
+                "explicitly label it (e.g. 'This is an LLM-generated interpretation' or 'The following is my interpretation')."
+            )
         user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
 
         try:
