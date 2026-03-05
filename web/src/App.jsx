@@ -1335,7 +1335,26 @@ export default function App() {
                     <span className="training-metric-icon flame" aria-hidden="true"><IconFlame /></span>
                     <span className="training-metric-label">Intensity level</span>
                   </div>
-                  <span className="training-metric-value">{formattedIntensity} / 5</span>
+                  <span className="training-metric-value">{formattedIntensity}</span>
+                </div>
+
+                <div className={`training-status ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
+                  <p className="training-status-main">
+                    <span className="training-status-meta">
+                      <span className="training-metric-icon training-status-icon info" aria-hidden="true">
+                        <IconDumbbell />
+                      </span>
+                      <span className="training-status-title">Equipment preferences</span>
+                    </span>
+                    <span className="training-status-value safe">
+                      {hasEquipmentPreferences ? `${equipmentList.length}` : 'Any'}
+                    </span>
+                  </p>
+                  {hasEquipmentPreferences && (
+                    <p className="training-status-detail">
+                      Selected: {equipmentList.map((item) => toTitleCase(item)).join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 <div className={`training-status ${hasInjuries ? 'warning' : 'safe'}`}>
@@ -1353,25 +1372,6 @@ export default function App() {
                   {hasInjuries && (
                     <p className="training-status-detail training-status-detail-warning">
                       Avoid loading: {injuryList.map((injury) => toTitleCase(injury)).join(', ')}
-                    </p>
-                  )}
-                </div>
-
-                <div className={`training-status ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
-                  <p className="training-status-main">
-                    <span className="training-status-meta">
-                      <span className="training-metric-icon training-status-icon info" aria-hidden="true">
-                        <IconDumbbell />
-                      </span>
-                      <span className="training-status-title">Equipment preferences</span>
-                    </span>
-                    <span className={`training-status-value ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
-                      {hasEquipmentPreferences ? `${equipmentList.length}` : 'Any'}
-                    </span>
-                  </p>
-                  {hasEquipmentPreferences && (
-                    <p className="training-status-detail">
-                      Selected: {equipmentList.map((item) => toTitleCase(item)).join(', ')}
                     </p>
                   )}
                 </div>
