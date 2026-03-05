@@ -194,10 +194,14 @@ class LLM:
         user_id: str | None = None,
         profile_context: str | None = None,
         has_saved_plan: bool | None = None,
+        grounded_constraints: dict | None = None,
+        explanation_why: bool = False,
     ) -> str:
         """
         Respond as the workout agent to a free-form user message (e.g. chat).
         Optionally include current plan, KRR context, and profile constraints for informed answers.
+        When explanation_why=True, pass grounded_constraints and instruct the model to only
+        reference those; label any interpretation beyond them.
         """
         if not self._client or not self._model:
             logger.warning("llm.chat unavailable model_configured=%s", bool(self._model))
@@ -214,6 +218,11 @@ class LLM:
             context.append(f"Current plan summary: {plan_summary[:600]}.")
         if krr_summary:
             context.append(f"Reasoning context: {krr_summary[:400]}.")
+        if grounded_constraints and explanation_why:
+            constraints_str = str(grounded_constraints)[:500]
+            context.append(
+                f"Grounded constraints (you may ONLY reference this; do not invent values): {constraints_str}"
+            )
 
         system = (
             "You are a friendly workout planner agent. You help users understand their weekly plan, "
@@ -228,6 +237,12 @@ class LLM:
             "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
             "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )
+        if explanation_why:
+            system += (
+                " This is an explanation request. You may ONLY reference information from grounded_constraints "
+                "when explaining plan choices. If you add any interpretation beyond those constraints, "
+                "explicitly label it (e.g. 'This is an LLM-generated interpretation' or 'The following is my interpretation')."
+            )
         user_content = "\n".join(context) + "\n\nUser message: " + (user_message or "").strip()
 
         try:

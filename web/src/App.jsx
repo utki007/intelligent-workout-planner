@@ -131,6 +131,26 @@ function extractQuotedValues(text) {
   return values
 }
 
+function formatKrrLogicFromStructured(krrLogic) {
+  if (!krrLogic || typeof krrLogic !== 'object') return null
+  const inj = krrLogic.injuries || []
+  const eq = krrLogic.equipment || []
+  const pipeline = krrLogic.constraint_pipeline || []
+  const forbiddenCount = krrLogic.forbidden_count ?? 0
+  const allowedCount = krrLogic.allowed_exercises_count ?? 0
+  const how = krrLogic.how_avoidance || ''
+  const themeAdjusted = krrLogic.theme_adjusted_due_to_injury
+  const parts = []
+  parts.push(`Injuries (avoided): ${inj.length ? inj.map(toTitleCase).join(', ') : 'none'}`)
+  parts.push(`Equipment (used): ${eq.length ? eq.map(toTitleCase).join(', ') : 'any'}`)
+  if (pipeline.length) parts.push(`Constraint order: ${pipeline.join(' → ')}`)
+  if (forbiddenCount > 0) parts.push(`${forbiddenCount} exercise(s) excluded (forbidden)`)
+  parts.push(`${allowedCount} exercise(s) in pool after constraints`)
+  if (themeAdjusted) parts.push('Theme adjusted due to conflict with injury')
+  parts.push(how)
+  return parts.join('\n')
+}
+
 function parseSymbolicSummary(reasoningText) {
   const raw = String(reasoningText || '')
   const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
@@ -385,6 +405,8 @@ export default function App() {
     policy: true,
     llm: true,
   })
+  const [defaultExplanationView, setDefaultExplanationView] = useState('llm') // 'krr' | 'llm'
+  const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
   const [toasts, setToasts] = useState([])
   const toastTimersRef = useRef({})
 
@@ -851,7 +873,7 @@ export default function App() {
     if (requestId) setLastRequestId(requestId)
     if (!res.ok) throw new Error(await res.text())
     const data = await res.json()
-    return data.response || 'No response.'
+    return data
   }
 
   const sendChat = async (textOverride = null) => {
@@ -893,14 +915,20 @@ export default function App() {
           const krrSummary = Object.entries(generated.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
           setChatActivity('Finalizing your response...')
           let assistantReply = intent.assistant_reply || 'Your plan is ready. I have applied it to your weekly view.'
+          let chatPayload = null
           try {
-            assistantReply = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+            chatPayload = await requestAssistantChat(id, msg, planSummary, krrSummary, selected)
+            assistantReply = chatPayload?.response ?? assistantReply
           } catch {
             // Fall back to deterministic copy while still publishing the generated plan.
           }
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantReply,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
           publishPlan(generated, null)
         }
@@ -952,31 +980,49 @@ export default function App() {
           setChatActivity(savePayload?.plan_updated
             ? 'Dynamic update applied. Explaining what changed...'
             : 'Profile saved. Preparing response...')
-          const fallbackReply = await requestAssistantChat(
+          const chatPayload = await requestAssistantChat(
             id,
             followUpPrompt,
             planSummary,
             krrSummary,
             savePayload?.selected_day || selectedDay,
           )
-          const assistantText = savePayload?.plan_updated ? fallbackReply : (intent.assistant_reply || fallbackReply)
+          const replyText = chatPayload?.response ?? ''
+          const assistantText = savePayload?.plan_updated ? replyText : (intent.assistant_reply || replyText)
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         } else {
-          const fallbackReply = await requestAssistantChat(id, msg)
-          const assistantText = intent.assistant_reply || fallbackReply
+          const chatPayload = await requestAssistantChat(id, msg)
+          const replyText = chatPayload?.response ?? ''
+          const assistantText = intent.assistant_reply || replyText
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
+            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         }
         return
       }
 
-      const assistantReply = await requestAssistantChat(id, msg)
-      setChatMessages((prev) => [...prev, { role: 'assistant', text: assistantReply }])
+      const chatPayload = await requestAssistantChat(id, msg)
+      const assistantReply = chatPayload?.response ?? 'No response.'
+      setChatMessages((prev) => [...prev, {
+        role: 'assistant',
+        text: assistantReply,
+        ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
+        ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
+        ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+        ...((chatPayload?.krr_logic || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
+      }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
     } finally {
@@ -1501,25 +1547,96 @@ export default function App() {
             <div key={`${idx}-${m.role}`} className={`msg msg-${m.role}`}>
               {(() => {
                 const text = String(m.text || '')
+                const hasExplanation = Boolean(m.krr_logic || m.llm_explanation)
+                const explView = messageExplanationView[idx] ?? m.explanationView ?? defaultExplanationView
                 const lineBreaks = (text.match(/\n/g) || []).length
-                const isLongAssistantReply = m.role === 'assistant' && (text.length > 900 || lineBreaks > 14)
+                const isLongAssistantReply = m.role === 'assistant' && !hasExplanation && (text.length > 900 || lineBreaks > 14)
                 const isExpanded = Boolean(expandedMsg[idx])
                 return (
                   <>
                     {m.role !== 'system' && <p className="msg-role">{m.role === 'user' ? '🧑 You' : '🤖 Coach AI'}</p>}
-                    <div className={`msg-body markdown-body ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {text}
-                      </ReactMarkdown>
-                    </div>
-                    {isLongAssistantReply && (
-                      <button
-                        type="button"
-                        className="msg-expand"
-                        onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
-                      >
-                        {isExpanded ? 'Show less' : 'Show more'}
-                      </button>
+                    {hasExplanation && m.role === 'assistant' ? (
+                      <div className="msg-explanation-wrap">
+                        <div className={`msg-body markdown-body msg-llm-view ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {text}
+                          </ReactMarkdown>
+                        </div>
+                        {isLongAssistantReply && (
+                          <button
+                            type="button"
+                            className="msg-expand"
+                            onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                          >
+                            {isExpanded ? 'Show less' : 'Show more'}
+                          </button>
+                        )}
+                        {(m.llm_explanation || m.krr_logic) && (
+                          <>
+                            <div className="msg-explanation-toggle-row" role="group" aria-label="Reasoning view">
+                              {m.llm_explanation && (
+                                <button
+                                  type="button"
+                                  className={`msg-explanation-btn ${explView === 'llm' ? 'active' : ''}`}
+                                  onClick={() =>
+                                    setMessageExplanationView((prev) => ({
+                                      ...prev,
+                                      [idx]: explView === 'llm' ? 'none' : 'llm',
+                                    }))
+                                  }
+                                >
+                                  {explView === 'llm' ? 'Hide LLM reasoning' : 'Show LLM reasoning'}
+                                </button>
+                              )}
+                              {m.krr_logic && (
+                                <button
+                                  type="button"
+                                  className={`msg-explanation-btn ${explView === 'krr' ? 'active' : ''}`}
+                                  onClick={() =>
+                                    setMessageExplanationView((prev) => ({
+                                      ...prev,
+                                      [idx]: explView === 'krr' ? 'none' : 'krr',
+                                    }))
+                                  }
+                                >
+                                  {explView === 'krr' ? 'Hide KRR logic' : 'Show KRR logic'}
+                                </button>
+                              )}
+                            </div>
+                            {explView === 'llm' && m.llm_explanation && (
+                              <div className="msg-body markdown-body msg-llm-view">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {m.llm_explanation}
+                                </ReactMarkdown>
+                              </div>
+                            )}
+                            {explView === 'krr' && m.krr_logic && (
+                              <div className="msg-body msg-krr-view">
+                                <pre className="krr-structured-block">
+                                  {formatKrrLogicFromStructured(m.krr_logic)}
+                                </pre>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className={`msg-body markdown-body ${isLongAssistantReply && !isExpanded ? 'msg-body-clamped' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {text}
+                          </ReactMarkdown>
+                        </div>
+                        {isLongAssistantReply && (
+                          <button
+                            type="button"
+                            className="msg-expand"
+                            onClick={() => setExpandedMsg((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+                          >
+                            {isExpanded ? 'Show less' : 'Show more'}
+                          </button>
+                        )}
+                      </>
                     )}
                   </>
                 )
@@ -1560,6 +1677,25 @@ export default function App() {
             />
             <button type="submit" className="btn btn-primary chat-send-btn" disabled={chatLoading}>Send</button>
           </form>
+          {hasConversation && (
+            <div className="explanation-default-toggle" role="group" aria-label="Default KRR reasoning visibility">
+              <span className="explanation-toggle-label">KRR reasoning panel:</span>
+              <button
+                type="button"
+                className={`explanation-default-btn ${defaultExplanationView === 'llm' ? 'active' : ''}`}
+                onClick={() => setDefaultExplanationView('llm')}
+              >
+                Hidden
+              </button>
+              <button
+                type="button"
+                className={`explanation-default-btn ${defaultExplanationView === 'krr' ? 'active' : ''}`}
+                onClick={() => setDefaultExplanationView('krr')}
+              >
+                Shown by default
+              </button>
+            </div>
+          )}
         </div>
 
         {DEV_MODE && lastRequestId && <p className="muted small">Request ID: {lastRequestId}</p>}
@@ -1686,7 +1822,7 @@ export default function App() {
             <div className="reason-block safe">
               <div className="reason-head">
                 <div className="reason-head-title">
-                  <h4>Symbolic Rules</h4>
+                  <h4>Symbolic vs Generative Boundary</h4>
                   <span className="confidence-badge confidence-rule">Rule-grounded</span>
                 </div>
                 <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
@@ -1695,30 +1831,64 @@ export default function App() {
               </div>
               {explainSectionsOpen.symbolic && (
                 <div className="reason-content">
-                  {(() => {
-                    const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
-                    return (
-                      <>
-                        <p>✓ Excluded movements violating injury constraints.</p>
-                        {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
-                        {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
-                        {parsed.recommendations.length > 0 && (
-                          <div className="reason-list-wrap">
-                            <p className="muted small">Recommended set</p>
-                            <ul className="reason-list">
-                              {parsed.recommendations.slice(0, 8).map((name) => (
-                                <li key={name}>{toTitleCase(name)}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        <details className="reason-raw">
-                          <summary>View raw symbolic trace</summary>
-                          <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
-                        </details>
-                      </>
-                    )
-                  })()}
+                  {drawerData.krr_logic ? (
+                    <>
+                      <div className="boundary-section symbolic-decisions">
+                        <h5 className="boundary-heading">SYMBOLIC DECISIONS</h5>
+                        <ul className="boundary-list">
+                          <li>✓ Avoided: {drawerData.krr_logic.injuries?.length
+                            ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
+                            : 'none'} (injury)
+                          </li>
+                          <li>✓ Used: {drawerData.krr_logic.equipment?.length
+                            ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
+                            : 'any'} (available equipment)
+                          </li>
+                          <li>✓ Beginner level filter applied</li>
+                          <li>Constraint order: {(drawerData.krr_logic.constraint_pipeline || []).join(' → ')}</li>
+                          <li>{drawerData.krr_logic.forbidden_count ?? 0} exercise(s) excluded (forbidden)</li>
+                          <li>{drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} in pool after constraints</li>
+                          {drawerData.krr_logic.theme_adjusted_due_to_injury && (
+                            <li>Theme adjusted due to conflict with injury</li>
+                          )}
+                        </ul>
+                      </div>
+                      <div className="boundary-section llm-interpretation">
+                        <h5 className="boundary-heading">LLM INTERPRETATION</h5>
+                        <p className="muted small">Volume distribution rationale; Recovery reasoning.</p>
+                      </div>
+                      <p className="boundary-how">{drawerData.krr_logic.how_avoidance}</p>
+                      <details className="reason-raw">
+                        <summary>View raw symbolic trace</summary>
+                        <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>
+                      </details>
+                    </>
+                  ) : (
+                    (() => {
+                      const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
+                      return (
+                        <>
+                          <p>✓ Excluded movements violating injury constraints.</p>
+                          {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
+                          {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
+                          {parsed.recommendations.length > 0 && (
+                            <div className="reason-list-wrap">
+                              <p className="muted small">Recommended set</p>
+                              <ul className="reason-list">
+                                {parsed.recommendations.slice(0, 8).map((name) => (
+                                  <li key={name}>{toTitleCase(name)}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          <details className="reason-raw">
+                            <summary>View raw symbolic trace</summary>
+                            <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
+                          </details>
+                        </>
+                      )
+                    })()
+                  )}
                 </div>
               )}
             </div>

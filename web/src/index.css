@@ -1307,6 +1307,113 @@ body {
   transform: translateY(0);
 }
 
+.explanation-default-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.explanation-toggle-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.explanation-default-btn {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.explanation-default-btn:hover {
+  background: #e9edf3;
+}
+
+.explanation-default-btn.active {
+  background: #e0e7ff;
+  border-color: #93c5fd;
+}
+
+.msg-explanation-wrap {
+  margin-top: 4px;
+}
+
+.msg-explanation-toggle-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.msg-explanation-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.msg-explanation-btn:hover {
+  background: #e9edf3;
+}
+
+.msg-explanation-btn.active {
+  background: #e0e7ff;
+  border-color: #93c5fd;
+}
+
+.msg-krr-view {
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  font-size: 0.85rem;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.krr-structured-block {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-llm-view {
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.boundary-section {
+  margin-bottom: 12px;
+}
+
+.boundary-heading {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin: 0 0 6px;
+}
+
+.boundary-list {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.boundary-list li {
+  margin-bottom: 4px;
+}
+
+.boundary-how {
+  margin-top: 10px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .tabs-shell {
   margin: 8px 0 0;
   border: 1px solid var(--border);

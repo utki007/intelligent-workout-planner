@@ -33,6 +33,7 @@ from agent.krr import (
     JOINT_MUSCLE_MAP,
     MUSCLE_ALIASES,
     MUSCLE_GROUP_EXPANSIONS,
+    get_krr_logic_summary,
     load_kb,
     normalize_equipment_preferences,
     normalize_injury_muscles,
@@ -273,6 +274,9 @@ class ChatIn(BaseModel):
 
 class ChatOut(BaseModel):
     response: str
+    krr_logic: dict | None = None
+    llm_explanation: str | None = None
+    llm_grounding_confidence: Literal["high", "partial", "interpretive"] | None = None
 
 
 class IntentIn(BaseModel):
@@ -333,6 +337,11 @@ class ProfileUpdateIn(BaseModel):
 class DayActionIn(BaseModel):
     user_id: str
     day: str
+
+
+class CounterfactualIn(BaseModel):
+    user_id: str
+    remove_injury: str | None = None
 
 
 class DayReduceIn(DayActionIn):
@@ -795,6 +804,27 @@ def _summarize_saved_krr(krr_reasoning: dict) -> str | None:
         if text:
             chunks.append(_clip(text, 240))
     return " ".join(chunks) if chunks else None
+
+
+# Rule-based "why" / explanation intent (deterministic, no simple string heuristic)
+WHY_PATTERNS = [
+    r"\bwhy\b",
+    r"\bhow\s+did\s+you\b",
+    r"\bwhat\s+logic\b",
+    r"\breasoning\b",
+    r"\bexplain\b",
+    r"\bhow\s+do\s+you\s+decide\b",
+    r"\bwhat's\s+the\s+reason\b",
+    r"\bwhats\s+the\s+reason\b",
+]
+
+
+def _is_explanation_query(message: str) -> bool:
+    """Detect explanation/why questions using rule-based patterns."""
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    return any(re.search(p, text) for p in WHY_PATTERNS)
 
 
 def _is_progress_query(message: str) -> bool:
@@ -1604,12 +1634,32 @@ def swap_plan_day_exercises(body: DaySwapIn):
     )
 
 
+def _day_theme_muscles_from_exercises(exercises: list[dict]) -> list[str]:
+    """Derive day theme muscles from exercise targets for theme-injury conflict check."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ex in exercises or []:
+        target = ex.get("target") or ex.get("targets")
+        if isinstance(target, list):
+            for t in target:
+                t = str(t).strip().lower()
+                if t and t not in seen:
+                    seen.add(t)
+                    out.append(t)
+        elif target:
+            t = str(target).strip().lower()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+    return out
+
+
 @app.get("/api/explanation")
 def get_explanation(
     day: str = Query(..., description="Day label, e.g. Day1"),
     user_id: str = Query(..., description="User ID who owns the plan"),
 ):
-    """Return KRR reasoning and LLM explanation for a given day. Requires a stored plan for user_id."""
+    """Return KRR reasoning, structured krr_logic, and LLM explanation for a given day."""
     user_id = _safe_user_id(user_id)
     stored = load_plan_for_user(user_id)
     if not stored:
@@ -1624,6 +1674,25 @@ def get_explanation(
         raise HTTPException(status_code=404, detail=f"Unknown day: {day}. Use a day label from your generated plan.")
     exercises = plan.get(day, [])
     day_krr = krr_reasoning.get(day, "")
+    day_theme_muscles = _day_theme_muscles_from_exercises(exercises)
+
+    prof = load_profile(user_id)
+    injuries = prof.get("injury_muscles", []) or []
+    equipment = prof.get("equipment_preferences", []) or []
+    krr_logic = None
+    try:
+        df = get_exercises_df()
+        load_kb(df, user_id, injuries, equipment_preferences=equipment)
+        krr_logic = get_krr_logic_summary(
+            user_id=user_id,
+            injury_muscles=injuries,
+            equipment_preferences=equipment,
+            day_label=day,
+            day_theme_muscles=day_theme_muscles,
+        )
+    except Exception:
+        logger.exception("explanation.get krr_logic_error user_id=%s day=%s", user_id, day)
+
     skipped = "All exercises for this day target injured muscles." if not exercises else None
     llm = LLM()
     llm_explanation = llm.explain_plan(
@@ -1634,14 +1703,109 @@ def get_explanation(
         krr_reasoning=day_krr or None,
     )
     logger.info(
-        "explanation.get user_id=%s day=%s exercises=%s has_krr=%s llm_chars=%s",
+        "explanation.get user_id=%s day=%s exercises=%s has_krr=%s has_krr_logic=%s llm_chars=%s",
         user_id,
         day,
         len(exercises),
         bool(day_krr),
+        krr_logic is not None,
         len(llm_explanation or ""),
     )
-    return {"krr_reasoning": day_krr, "llm_explanation": llm_explanation}
+    result = {"krr_reasoning": day_krr, "llm_explanation": llm_explanation}
+    if krr_logic is not None:
+        result["krr_logic"] = krr_logic
+    return result
+
+
+@app.post("/api/counterfactual")
+def counterfactual(body: CounterfactualIn):
+    """
+    Counterfactual reasoning: what would change if an injury were removed?
+    Temporarily removes the injury, reloads KB, recomputes allowed/forbidden,
+    returns exercises that would newly become available.
+    """
+    user_id = _safe_user_id(body.user_id)
+    remove_injury = (body.remove_injury or "").strip().lower()
+    if not remove_injury:
+        raise HTTPException(status_code=400, detail="remove_injury is required (e.g. 'shoulder')")
+
+    prof = load_profile(user_id)
+    injuries = list(prof.get("injury_muscles", []) or [])
+    equipment = prof.get("equipment_preferences", []) or []
+
+    muscles_to_remove = normalize_injury_muscles([remove_injury])
+    injuries_without = [
+        i for i in injuries
+        if not (normalize_injury_muscles([i]) & muscles_to_remove)
+    ]
+    if injuries_without == injuries and muscles_to_remove:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Injury '{remove_injury}' not in profile. Use a joint/muscle from your injuries list.",
+        )
+
+    try:
+        df = get_exercises_df()
+        load_kb(df, user_id, injuries, equipment_preferences=equipment)
+        forbidden_before = set(query_forbidden(user_id))
+        load_kb(df, "counterfactual_temp", injuries_without, equipment_preferences=equipment)
+        forbidden_after = set(query_forbidden("counterfactual_temp"))
+        new_exercises = sorted(forbidden_before - forbidden_after)
+        removed_exercises = sorted(forbidden_after - forbidden_before)
+    except Exception:
+        logger.exception("counterfactual.error user_id=%s remove_injury=%s", user_id, remove_injury)
+        raise HTTPException(status_code=500, detail="Counterfactual computation failed.")
+
+    return {
+        "counterfactual_difference": {
+            "new_exercises": new_exercises,
+            "removed_exercises": removed_exercises,
+        },
+        "remove_injury": remove_injury,
+    }
+
+
+@app.get("/api/krr_trace")
+def krr_trace(
+    user_id: str = Query(..., description="User ID"),
+    seed: int | None = Query(None, description="Optional seed for reproducibility"),
+):
+    """
+    Return full KRR trace: applied rules, forbidden/allowed exercises, constraint pipeline.
+    Used for reproducibility and scientific defensibility.
+    """
+    user_id = _safe_user_id(user_id)
+    prof = load_profile(user_id)
+    injuries = prof.get("injury_muscles", []) or []
+    equipment = prof.get("equipment_preferences", []) or []
+
+    try:
+        df = get_exercises_df()
+        load_kb(df, user_id, injuries, equipment_preferences=equipment)
+        krr_logic = get_krr_logic_summary(
+            user_id=user_id,
+            injury_muscles=injuries,
+            equipment_preferences=equipment,
+        )
+        forbidden = query_forbidden(user_id)
+        recommended = query_recommended(user_id)
+    except Exception:
+        logger.exception("krr_trace.error user_id=%s", user_id)
+        raise HTTPException(status_code=500, detail="KRR trace computation failed.")
+
+    trace = {
+        "seed": seed,
+        "user_id": user_id,
+        "constraint_pipeline": krr_logic.get("constraint_pipeline", []),
+        "injuries": krr_logic.get("injuries", []),
+        "equipment": krr_logic.get("equipment", []),
+        "forbidden_exercises": forbidden,
+        "forbidden_count": len(forbidden),
+        "recommended_exercises": recommended,
+        "recommended_count": len(recommended),
+        "krr_logic_version": krr_logic.get("krr_logic_version"),
+    }
+    return trace
 
 
 @app.post("/api/chat", response_model=ChatOut)
@@ -1747,6 +1911,56 @@ def chat(body: ChatIn):
                 len(schedule_reply or ""),
             )
             return ChatOut(response=schedule_reply)
+
+    if _is_explanation_query(body.message):
+        injuries = prof.get("injury_muscles", []) or []
+        equipment = prof.get("equipment_preferences", []) or []
+        krr_logic = None
+        try:
+            df = get_exercises_df()
+            load_kb(df, user_id, injuries, equipment_preferences=equipment)
+            krr_logic = get_krr_logic_summary(
+                user_id=user_id,
+                injury_muscles=injuries,
+                equipment_preferences=equipment,
+                day_label=body.selected_day,
+                day_theme_muscles=[],
+            )
+        except Exception:
+            logger.exception("chat.explanation kb_load_error user_id=%s", user_id)
+
+        grounded_constraints = None
+        if krr_logic:
+            grounded_constraints = {
+                "injuries": krr_logic.get("injuries", []),
+                "equipment": krr_logic.get("equipment", []),
+                "forbidden_exercises": krr_logic.get("forbidden_exercises", [])[:30],
+            }
+
+        expl_reply = llm.chat(
+            user_message=body.message,
+            plan_summary=plan_summary,
+            krr_summary=krr_summary,
+            user_id=user_id,
+            profile_context=combined_context,
+            has_saved_plan=has_saved_plan,
+            grounded_constraints=grounded_constraints,
+            explanation_why=True,
+        )
+        append_chat_turn_to_profile(user_id, body.message, expl_reply)
+        confidence = "high" if krr_logic and grounded_constraints else "interpretive"
+        logger.info(
+            "chat.explanation user_id=%s has_krr_logic=%s confidence=%s",
+            user_id,
+            krr_logic is not None,
+            confidence,
+        )
+        return ChatOut(
+            response=expl_reply,
+            krr_logic=krr_logic,
+            llm_explanation=expl_reply,
+            llm_grounding_confidence=confidence,
+        )
 
     response = llm.chat(
         user_message=body.message,
