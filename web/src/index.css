@@ -1345,27 +1345,59 @@ body {
 
 .msg-explanation-toggle-row {
   display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  margin-bottom: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .msg-explanation-btn {
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface-soft);
-  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid #bfdbfe;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font-size: 0.8rem;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
 }
 
 .msg-explanation-btn:hover {
-  background: #e9edf3;
+  background: #dbeafe;
+  border-color: #93c5fd;
 }
 
 .msg-explanation-btn.active {
-  background: #e0e7ff;
-  border-color: #93c5fd;
+  background: #3b82f6;
+  border-color: #2563eb;
+  color: white;
+}
+
+.msg-explanation-btn.active:hover {
+  background: #2563eb;
+  border-color: #1d4ed8;
+}
+
+.msg-explanation-btn-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+}
+
+.msg-explanation-btn-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.msg-explanation-btn-krr {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 0.78rem;
 }
 
 .msg-krr-view {

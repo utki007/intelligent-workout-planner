@@ -376,6 +376,25 @@ function IconSearch() {
   )
 }
 
+function IconCode() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="m8 18-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m16 6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function IconBrain() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -1588,7 +1607,9 @@ export default function App() {
                               {m.llm_explanation && (
                                 <button
                                   type="button"
-                                  className={`msg-explanation-btn ${explView === 'llm' ? 'active' : ''}`}
+                                  className={`msg-explanation-btn msg-explanation-btn-llm ${explView === 'llm' ? 'active' : ''}`}
+                                  title="View generative AI reasoning (natural language summary)"
+                                  aria-expanded={explView === 'llm'}
                                   onClick={() =>
                                     setMessageExplanationView((prev) => ({
                                       ...prev,
@@ -1596,13 +1617,16 @@ export default function App() {
                                     }))
                                   }
                                 >
-                                  {explView === 'llm' ? 'Hide LLM reasoning' : 'Show LLM reasoning'}
+                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconBrain /></span>
+                                  {explView === 'llm' ? 'Hide' : 'View'} Generative Reasoning
                                 </button>
                               )}
                               {m.krr_reasoning && (
                                 <button
                                   type="button"
-                                  className={`msg-explanation-btn ${explView === 'krr' ? 'active' : ''}`}
+                                  className={`msg-explanation-btn msg-explanation-btn-krr ${explView === 'krr' ? 'active' : ''}`}
+                                  title="View symbolic logic (facts, rules, inference)"
+                                  aria-expanded={explView === 'krr'}
                                   onClick={() =>
                                     setMessageExplanationView((prev) => ({
                                       ...prev,
@@ -1610,7 +1634,8 @@ export default function App() {
                                     }))
                                   }
                                 >
-                                  {explView === 'krr' ? 'Hide KRR logic' : 'Show KRR logic'}
+                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconCode /></span>
+                                  {explView === 'krr' ? 'Hide' : 'View'} Symbolic Logic
                                 </button>
                               )}
                             </div>
