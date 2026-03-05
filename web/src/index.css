@@ -1415,6 +1415,95 @@ body {
   word-break: break-word;
 }
 
+.krr-cards {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.krr-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.krr-card h5 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.krr-card ul {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 4px;
+}
+
+.krr-card p {
+  margin: 0;
+}
+
+.krr-card-safe {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.krr-card-warning {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.krr-card-pool {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.krr-card-narrative {
+  border-color: #e5e7eb;
+  background: #f9fafb;
+}
+
+.krr-theme-adjust {
+  font-style: italic;
+  color: #92400e;
+}
+
+.krr-trace-collapse {
+  margin-top: 12px;
+}
+
+.krr-trace-toggle {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.krr-trace-toggle:hover {
+  background: #f5f5f7;
+  color: var(--text);
+}
+
+.krr-trace-pre {
+  margin-top: 8px;
+  padding: 10px;
+  font-size: 0.75rem;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
 .msg-llm-view {
   font-size: 0.95rem;
   line-height: 1.55;
@@ -1652,13 +1741,63 @@ body {
   border-radius: 0;
   padding: 10px 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .exercise-item + .exercise-item {
   border-top: 1px solid var(--border);
+}
+
+.exercise-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.exercise-item-main .exercise-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.exercise-item-main .exercise-prescription {
+  flex-shrink: 0;
+}
+
+.exercise-why-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.exercise-why-btn:hover {
+  background: #f0f4ff;
+  color: var(--text);
+  border-color: #93c5fd;
+}
+
+.exercise-why-expand {
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.exercise-why-expand ul {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 4px;
 }
 
 .exercise-name {

@@ -139,6 +139,50 @@ function formatKrrLogicFromStructured(krrLogic) {
   return parts.join('\n')
 }
 
+function KrrStructuredCards({ krrLogic }) {
+  if (!krrLogic || typeof krrLogic !== 'object') return null
+  const inj = krrLogic.injuries || []
+  const eq = krrLogic.equipment || []
+  const pipeline = krrLogic.constraint_pipeline || []
+  const forbiddenCount = krrLogic.forbidden_count ?? 0
+  const allowedCount = krrLogic.allowed_exercises_count ?? 0
+  const how = krrLogic.how_avoidance || ''
+  const themeAdjusted = krrLogic.theme_adjusted_due_to_injury
+
+  return (
+    <div className="krr-cards">
+      <div className={`krr-card krr-card-constraints ${inj.length ? 'krr-card-warning' : 'krr-card-safe'}`}>
+        <h5>Constraints applied</h5>
+        <ul>
+          <li><strong>Injuries (avoided):</strong> {inj.length ? inj.map(toTitleCase).join(', ') : 'None'}</li>
+          <li><strong>Equipment:</strong> {eq.length ? eq.map(toTitleCase).join(', ') : 'Any'}</li>
+          {pipeline.length > 0 && (
+            <li><strong>Filter order:</strong> {pipeline.join(' → ')}</li>
+          )}
+        </ul>
+      </div>
+      <div className="krr-card krr-card-pool">
+        <h5>Exercise pool</h5>
+        <ul>
+          {forbiddenCount > 0 && (
+            <li><strong>{forbiddenCount}</strong> exercise(s) excluded (forbidden by injury filter)</li>
+          )}
+          <li><strong>{allowedCount}</strong> exercise(s) in pool after constraints</li>
+          {themeAdjusted && (
+            <li className="krr-theme-adjust">Theme adjusted due to conflict with injury</li>
+          )}
+        </ul>
+      </div>
+      {how && (
+        <div className="krr-card krr-card-narrative">
+          <h5>Summary</h5>
+          <p>{how}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function sorenessClass(value) {
   if (value >= 4) return 'heat-high'
   if (value >= 3) return 'heat-mid'
@@ -394,6 +438,9 @@ export default function App() {
   const [dayReasoningModalLoading, setDayReasoningModalLoading] = useState(false)
   const [dayReasoningModalError, setDayReasoningModalError] = useState('')
   const [dayReasoningModalTab, setDayReasoningModalTab] = useState('krr') // 'krr' | 'symbolic' | 'llm'
+  const [dayReasoningShowTrace, setDayReasoningShowTrace] = useState(false)
+  const [globalReasoningShowTrace, setGlobalReasoningShowTrace] = useState(false)
+  const [expandedExerciseWhy, setExpandedExerciseWhy] = useState(null) // 'Day1-0' | null
   const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
   const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
   const [reasoningModalOpen, setReasoningModalOpen] = useState(false)
@@ -1811,16 +1858,53 @@ export default function App() {
                 <ol className="exercise-list">
                 {selectedDayExercises.length === 0 && (
                   <li className="exercise-item">
-                    <p className="exercise-name muted">Rest Day</p>
-                    <p className="exercise-prescription muted">—</p>
+                    <div className="exercise-item-main">
+                      <p className="exercise-name muted">Rest Day</p>
+                      <p className="exercise-prescription muted">—</p>
+                    </div>
                   </li>
                 )}
-                {selectedDayExercises.map((ex, idx) => (
-                  <li key={`${ex.name}-${idx}`} className="exercise-item">
-                    <p className="exercise-name">{toTitleCase(ex.name)}</p>
-                    <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
-                  </li>
-                ))}
+                {selectedDayExercises.map((ex, idx) => {
+                  const whyKey = selectedDay ? `${selectedDay}-${idx}` : null
+                  const isWhyExpanded = expandedExerciseWhy === whyKey
+                  const targetMuscle = String(ex.target || '').trim()
+                  const injuryList = profile.injury_muscles || []
+                  const focusMuscles = selectedDayInsights?.focusMuscles || []
+                  const isSafe = !targetMuscle || !injuryList.some((i) => String(i).toLowerCase() === targetMuscle.toLowerCase())
+                  const fitsFocus = !focusMuscles.length || focusMuscles.some((m) => String(m).toLowerCase() === targetMuscle.toLowerCase())
+                  return (
+                    <li key={`${ex.name}-${idx}`} className="exercise-item">
+                      <div className="exercise-item-main">
+                        <p className="exercise-name">{toTitleCase(ex.name)}</p>
+                        <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
+                        <button
+                          type="button"
+                          className="exercise-why-btn"
+                          onClick={() => setExpandedExerciseWhy(isWhyExpanded ? null : whyKey)}
+                          aria-expanded={isWhyExpanded}
+                          title="Why this exercise?"
+                        >
+                          Why?
+                        </button>
+                      </div>
+                      {isWhyExpanded && (
+                        <div className="exercise-why-expand">
+                          <ul>
+                            {targetMuscle && (
+                              <li><strong>Targets:</strong> {toTitleCase(targetMuscle)}</li>
+                            )}
+                            {isSafe && injuryList.length > 0 && (
+                              <li>Safe: does not load your injured muscles ({injuryList.map(toTitleCase).join(', ')})</li>
+                            )}
+                            {fitsFocus && focusMuscles.length > 0 && (
+                              <li>Fits today&apos;s focus on {focusMuscles.map(toTitleCase).join(', ')}</li>
+                            )}
+                          </ul>
+                        </div>
+                      )}
+                    </li>
+                  )
+                })}
                 </ol>
               </div>
 
@@ -1840,7 +1924,7 @@ export default function App() {
           <div
             className="drawer-backdrop"
             aria-hidden
-            onClick={() => setDayReasoningModalOpen(false)}
+            onClick={() => { setDayReasoningModalOpen(false); setDayReasoningShowTrace(false) }}
           />
           <div
             className="reasoning-modal card"
@@ -1853,7 +1937,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setDayReasoningModalOpen(false)}
+                onClick={() => { setDayReasoningModalOpen(false); setDayReasoningShowTrace(false) }}
               >
                 Close
               </button>
@@ -1888,11 +1972,33 @@ export default function App() {
                 <>
                   {dayReasoningModalTab === 'krr' && (
                     <div className="reasoning-section">
-                      <h4>KRR Logic (this day)</h4>
-                      {dayReasoningModalData.krr_day_text ? (
-                        <pre className="krr-structured-block">
-                          {dayReasoningModalData.krr_day_text}
-                        </pre>
+                      <h4>Rules & filters (this day)</h4>
+                      {dayReasoningModalData.krr_logic ? (
+                        <>
+                          <KrrStructuredCards krrLogic={dayReasoningModalData.krr_logic} />
+                          {dayReasoningModalData.krr_day_text && (
+                            <div className="krr-trace-collapse">
+                              <button
+                                type="button"
+                                className="krr-trace-toggle"
+                                onClick={() => setDayReasoningShowTrace((v) => !v)}
+                                aria-expanded={dayReasoningShowTrace}
+                              >
+                                {dayReasoningShowTrace ? 'Hide' : 'Show'} Datalog trace
+                              </button>
+                              {dayReasoningShowTrace && (
+                                <pre className="krr-structured-block krr-trace-pre">
+                                  {dayReasoningModalData.krr_day_text}
+                                </pre>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      ) : dayReasoningModalData.krr_day_text ? (
+                        <>
+                          <p className="muted small">Structured summary not available. Showing raw trace:</p>
+                          <pre className="krr-structured-block">{dayReasoningModalData.krr_day_text}</pre>
+                        </>
                       ) : (
                         <p className="muted small">
                           No KRR logic is available for this day yet. This may be a rest day or no reasoning has been computed.
@@ -1955,7 +2061,7 @@ export default function App() {
           <div
             className="drawer-backdrop"
             aria-hidden
-            onClick={() => setReasoningModalOpen(false)}
+            onClick={() => { setReasoningModalOpen(false); setGlobalReasoningShowTrace(false) }}
           />
           <div
             className="reasoning-modal card"
@@ -1968,7 +2074,7 @@ export default function App() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setReasoningModalOpen(false)}
+                onClick={() => { setReasoningModalOpen(false); setGlobalReasoningShowTrace(false) }}
               >
                 Close
               </button>
@@ -2027,11 +2133,33 @@ export default function App() {
 
                   {reasoningModalTab === 'krr' && (
                     <div className="reasoning-section">
-                      <h4>Global KRR Logic</h4>
-                      {globalReasoning.krr_global_text ? (
-                        <pre className="krr-structured-block">
-                          {globalReasoning.krr_global_text}
-                        </pre>
+                      <h4>Rules & filters (global)</h4>
+                      {globalReasoning.krr_logic ? (
+                        <>
+                          <KrrStructuredCards krrLogic={globalReasoning.krr_logic} />
+                          {globalReasoning.krr_global_text && (
+                            <div className="krr-trace-collapse">
+                              <button
+                                type="button"
+                                className="krr-trace-toggle"
+                                onClick={() => setGlobalReasoningShowTrace((v) => !v)}
+                                aria-expanded={globalReasoningShowTrace}
+                              >
+                                {globalReasoningShowTrace ? 'Hide' : 'Show'} Datalog trace
+                              </button>
+                              {globalReasoningShowTrace && (
+                                <pre className="krr-structured-block krr-trace-pre">
+                                  {globalReasoning.krr_global_text}
+                                </pre>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      ) : globalReasoning.krr_global_text ? (
+                        <>
+                          <p className="muted small">Structured summary not available. Showing raw trace:</p>
+                          <pre className="krr-structured-block">{globalReasoning.krr_global_text}</pre>
+                        </>
                       ) : (
                         <p className="muted small">
                           No KRR logic is available yet. Generate a plan to compute the knowledge-base view.
