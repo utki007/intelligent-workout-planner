@@ -1835,6 +1835,102 @@ body {
   z-index: 25;
 }
 
+.reasoning-modal {
+  position: fixed;
+  inset: 10% 15%;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-radius: 18px;
+  padding: 14px 18px 18px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+}
+
+.reasoning-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.reasoning-modal-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.reasoning-modal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.reasoning-tab {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+}
+
+.reasoning-tab-active {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--text);
+}
+
+.reasoning-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding-top: 4px;
+}
+
+.reasoning-section {
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.reasoning-section h4 {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+}
+
+.reasoning-list {
+  margin: 6px 0 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 4px;
+}
+
+.reasoning-day-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.reasoning-day-chip {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+.reasoning-day-chip-active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #111827;
+}
+
+.reasoning-day-details {
+  margin-top: 6px;
+}
+
 .drawer-head {
   display: flex;
   align-items: center;

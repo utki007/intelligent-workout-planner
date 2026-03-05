@@ -452,3 +452,46 @@ def get_krr_reasoning(
     else:
         lines.append("  Result: (none — rest day or no matching beginner exercises after injury filter).")
     return "\n".join(lines)
+
+
+def build_symbolic_summary(krr_logic: dict[str, Any] | None) -> list[str]:
+  """
+  Build a compact, symbolic summary from structured KRR logic.
+
+  Returns a list of bullet-ready strings describing injuries, equipment,
+  difficulty, and safe pool size. Caller is responsible for formatting.
+  """
+  if not isinstance(krr_logic, dict) or not krr_logic:
+      return []
+
+  injuries = krr_logic.get("injuries") or []
+  equipment = krr_logic.get("equipment") or []
+  pool_size = krr_logic.get("candidate_pool_size_after_constraints")
+  forbidden_count = krr_logic.get("forbidden_count")
+
+  bullets: list[str] = []
+  if injuries:
+      bullets.append(
+          "Injuries: " + ", ".join(str(m).strip() for m in injuries if str(m).strip())
+      )
+  else:
+      bullets.append("Injuries: No injuries blocking exercises")
+
+  if equipment:
+      bullets.append(
+          "Equipment: " + ", ".join(str(eq).strip() for eq in equipment if str(eq).strip())
+      )
+  else:
+      bullets.append("Equipment: Any available equipment")
+
+  bullets.append("Difficulty: Beginner-focused filter applied")
+
+  if pool_size is not None:
+      bullets.append(f"Safe pool: {int(pool_size)} exercises after filters")
+  elif forbidden_count is not None and krr_logic.get("allowed_exercises_count") is not None:
+      bullets.append(
+          f"Safe pool: {int(krr_logic['allowed_exercises_count'])} exercises after filters "
+          f"({int(forbidden_count)} exercise(s) excluded)"
+      )
+
+  return bullets

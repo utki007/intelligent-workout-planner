@@ -119,18 +119,6 @@ function toTitleCase(text) {
     .replace(/\b[a-z]/g, (char) => char.toUpperCase())
 }
 
-function extractQuotedValues(text) {
-  const values = []
-  const re = /"([^"]+)"|'([^']+)'/g
-  let m = re.exec(text)
-  while (m) {
-    const v = (m[1] || m[2] || '').trim()
-    if (v) values.push(v)
-    m = re.exec(text)
-  }
-  return values
-}
-
 function formatKrrLogicFromStructured(krrLogic) {
   if (!krrLogic || typeof krrLogic !== 'object') return null
   const inj = krrLogic.injuries || []
@@ -149,21 +137,6 @@ function formatKrrLogicFromStructured(krrLogic) {
   if (themeAdjusted) parts.push('Theme adjusted due to conflict with injury')
   parts.push(how)
   return parts.join('\n')
-}
-
-function parseSymbolicSummary(reasoningText) {
-  const raw = String(reasoningText || '')
-  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
-  const themeLine = lines.find((line) => /^Inference\s*\(/i.test(line)) || null
-  const resultLine = lines.find((line) => /^Result\s*:/i.test(line)) || null
-  const recommendedLines = lines.filter((line) => /recommended\(/i.test(line))
-  const quoted = recommendedLines.flatMap((line) => extractQuotedValues(line))
-  const cleaned = Array.from(new Set(quoted.filter((x) => x.toLowerCase() !== 'athlete')))
-  return {
-    themeLine,
-    resultLine,
-    recommendations: cleaned,
-  }
 }
 
 function sorenessClass(value) {
@@ -415,17 +388,19 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useState(null)
   const [lastRequestId, setLastRequestId] = useState(null)
 
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [drawerLoading, setDrawerLoading] = useState(false)
-  const [drawerDay, setDrawerDay] = useState(null)
-  const [drawerData, setDrawerData] = useState(null)
-  const [explainSectionsOpen, setExplainSectionsOpen] = useState({
-    symbolic: true,
-    policy: true,
-    llm: true,
-  })
+  const [dayReasoningModalOpen, setDayReasoningModalOpen] = useState(false)
+  const [dayReasoningModalDay, setDayReasoningModalDay] = useState(null)
+  const [dayReasoningModalData, setDayReasoningModalData] = useState(null)
+  const [dayReasoningModalLoading, setDayReasoningModalLoading] = useState(false)
+  const [dayReasoningModalError, setDayReasoningModalError] = useState('')
+  const [dayReasoningModalTab, setDayReasoningModalTab] = useState('krr') // 'krr' | 'symbolic' | 'llm'
   const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
   const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
+  const [reasoningModalOpen, setReasoningModalOpen] = useState(false)
+  const [reasoningModalTab, setReasoningModalTab] = useState('overview') // 'overview' | 'krr' | 'llm'
+  const [globalReasoning, setGlobalReasoning] = useState(null)
+  const [globalReasoningLoading, setGlobalReasoningLoading] = useState(false)
+  const [globalReasoningError, setGlobalReasoningError] = useState('')
   const [toasts, setToasts] = useState([])
   const toastTimersRef = useRef({})
 
@@ -519,6 +494,27 @@ export default function App() {
       timer: null,
       startedAt: Date.now(),
       remainingMs: remaining,
+    }
+  }
+
+  const openReasoningModal = async () => {
+    setReasoningModalOpen(true)
+    setReasoningModalTab('overview')
+    setGlobalReasoningError('')
+    try {
+      setGlobalReasoningLoading(true)
+      const res = await fetch(`${API}/global-reasoning?user_id=${encodeURIComponent(userId)}`)
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || 'Failed to load global reasoning')
+      }
+      const data = await res.json()
+      setGlobalReasoning(data)
+    } catch (e) {
+      setGlobalReasoning(null)
+      setGlobalReasoningError(e?.message || 'Unable to load global reasoning. Generate a plan or try again later.')
+    } finally {
+      setGlobalReasoningLoading(false)
     }
   }
 
@@ -1061,29 +1057,33 @@ export default function App() {
     }
   }
 
-  const openExplanationDrawer = async (day) => {
+  const openDayReasoningModal = async (day) => {
     const id = (userId || '').trim()
     if (!id || !day) return
 
-    setDrawerDay(day)
-    setDrawerOpen(true)
-    setDrawerLoading(true)
-    setDrawerData(null)
-    setExplainSectionsOpen({ symbolic: true, policy: true, llm: true })
+    setDayReasoningModalDay(day)
+    setDayReasoningModalOpen(true)
+    setDayReasoningModalLoading(true)
+    setDayReasoningModalData(null)
+    setDayReasoningModalError('')
+    setDayReasoningModalTab('krr')
 
     try {
       const res = await fetch(`${API}/explanation?day=${encodeURIComponent(day)}&user_id=${encodeURIComponent(id)}`)
-      const data = res.ok ? await res.json() : null
-      setDrawerData(data || { error: await res.text() })
+      if (!res.ok) {
+        setDayReasoningModalError('No reasoning is available for this day yet.')
+        setDayReasoningModalData(null)
+      } else {
+        const data = await res.json()
+        setDayReasoningModalData(data)
+        setDayReasoningModalError('')
+      }
     } catch (e) {
-      setDrawerData({ error: e.message || 'Failed to fetch explanation' })
+      setDayReasoningModalError('No reasoning is available for this day yet.')
+      setDayReasoningModalData(null)
     } finally {
-      setDrawerLoading(false)
+      setDayReasoningModalLoading(false)
     }
-  }
-
-  const toggleExplainSection = (key) => {
-    setExplainSectionsOpen((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
   const applyDayActionResult = (payload) => {
@@ -1569,6 +1569,16 @@ export default function App() {
             <p className="top-subtitle">Build safe, personalized weekly workouts</p>
           </div>
           <div className="top-actions">
+            <button
+              type="button"
+              className="btn training-edit-btn"
+              onClick={openReasoningModal}
+            >
+              <span className="training-edit-btn-icon" aria-hidden="true">
+                <IconBrain />
+              </span>
+              <span>Show reasoning</span>
+            </button>
           </div>
         </div>
 
@@ -1815,7 +1825,7 @@ export default function App() {
               </div>
 
               <div className="training-card-actions day-actions">
-                <button type="button" className="btn training-edit-btn" onClick={() => openExplanationDrawer(selectedDay)}>
+                <button type="button" className="btn training-edit-btn" onClick={() => openDayReasoningModal(selectedDay)}>
                   <span className="training-edit-btn-icon" aria-hidden="true"><IconSearch /></span>
                   <span>Explain Day</span>
                 </button>
@@ -1825,143 +1835,240 @@ export default function App() {
         )}
       </aside>
 
-      <section className={`explain-drawer ${drawerOpen ? 'open' : ''}`}>
-        <div className="drawer-head">
-          <h3>Reasoning Breakdown{drawerDay ? ` — ${drawerDay}` : ''}</h3>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDrawerOpen(false)}>Close</button>
-        </div>
+      {dayReasoningModalOpen && (
+        <>
+          <div
+            className="drawer-backdrop"
+            aria-hidden
+            onClick={() => setDayReasoningModalOpen(false)}
+          />
+          <div
+            className="reasoning-modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="day-reasoning-modal-title"
+          >
+            <header className="reasoning-modal-header">
+              <h3 id="day-reasoning-modal-title">Reasoning for {formatDayLabel(dayReasoningModalDay || '')}</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setDayReasoningModalOpen(false)}
+              >
+                Close
+              </button>
+            </header>
 
-        {drawerLoading && <p className="muted">Loading reasoning…</p>}
-        {!drawerLoading && drawerData?.error && <p className="error-text">{drawerData.error}</p>}
-
-        {!drawerLoading && drawerData && !drawerData.error && (
-          <div className="drawer-body">
-            <div className="reason-block safe">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <span className="step-badge">Step 1</span>
-                  <h4>Symbolic filter (rules)</h4>
-                  <span className="confidence-badge confidence-rule">Rule-grounded</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
-                  {explainSectionsOpen.symbolic ? 'Hide' : 'Show'}
+            <div className="reasoning-modal-tabs" role="tablist" aria-label="Day reasoning sections">
+              {[
+                ['krr', 'KRR Logic'],
+                ['symbolic', 'Symbolic logic'],
+                ['llm', 'LLM Logic'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={dayReasoningModalTab === key}
+                  className={`reasoning-tab ${dayReasoningModalTab === key ? 'reasoning-tab-active' : ''}`}
+                  onClick={() => setDayReasoningModalTab(key)}
+                >
+                  {label}
                 </button>
-              </div>
-              {explainSectionsOpen.symbolic && (
-                <div className="reason-content">
-                  <p className="reason-summary">
-                    We filtered out unsafe movements and applied your injury, equipment, and difficulty constraints.
-                  </p>
-                  {drawerData.krr_logic ? (
-                    <>
-                      <div className="boundary-section symbolic-decisions">
-                        <h5 className="boundary-heading">Symbolic decisions</h5>
-                        <ul className="boundary-list">
-                          <li>
-                            <strong>Injuries</strong>:{' '}
-                            {drawerData.krr_logic.injuries?.length
-                              ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
-                              : 'No injuries blocking exercises'}
-                          </li>
-                          <li>
-                            <strong>Equipment</strong>:{' '}
-                            {drawerData.krr_logic.equipment?.length
-                              ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
-                              : 'Any available equipment'}
-                          </li>
-                          <li>
-                            <strong>Difficulty</strong>: Beginner-focused filter applied
-                          </li>
-                          <li>
-                            <strong>Safe pool</strong>:{' '}
-                            {drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} exercises after filters
-                          </li>
-                        </ul>
-                      </div>
-                      <details className="reason-raw">
-                        <summary>Advanced: full symbolic trace</summary>
-                        <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>
-                      </details>
-                    </>
-                  ) : (
-                    (() => {
-                      const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
-                      return (
-                        <>
-                          <p className="reason-summary">
-                            We excluded movements that violated your injury constraints and focused today&apos;s plan.
-                          </p>
-                          {parsed.themeLine && <p><strong>Focus scope:</strong> {parsed.themeLine}</p>}
-                          {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
-                          {parsed.recommendations.length > 0 && (
-                            <div className="reason-list-wrap">
-                              <p className="muted small">Example safe exercises</p>
-                              <ul className="reason-list">
-                                {parsed.recommendations.slice(0, 8).map((name) => (
-                                  <li key={name}>{toTitleCase(name)}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          <details className="reason-raw">
-                            <summary>Advanced: full symbolic trace</summary>
-                            <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
-                          </details>
-                        </>
-                      )
-                    })()
-                  )}
-                </div>
-              )}
+              ))}
             </div>
 
-            <div className="reason-block">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <span className="step-badge">Step 2</span>
-                  <h4>LLM synthesis (final plan)</h4>
-                  <span className="confidence-badge confidence-llm">LLM rationale</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('llm')}>
-                  {explainSectionsOpen.llm ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              {explainSectionsOpen.llm && (
-                <div className="reason-content">
-                  <p className="reason-summary">
-                    We arranged the filtered exercises into a balanced, progressive split that respects your safety limits.
-                  </p>
-                  {drawerData.llm_explanation ? (
-                    <ul className="llm-explanation-list">
-                      {(drawerData.llm_explanation || '')
-                        .replace(/\r\n/g, '\n')
-                        .split(/\n+/)
-                        .flatMap((line) => line.split(' - '))
-                        .map((chunk) => chunk.replace(/^-\s*/, '').trim())
-                        .filter(Boolean)
-                        .slice(0, 6)
-                        .map((text, idx) => (
-                          <li key={idx}>{text}</li>
-                        ))}
-                    </ul>
-                  ) : (
-                    <p className="muted small">No LLM explanation available.</p>
+            <div className="reasoning-modal-body">
+              {dayReasoningModalLoading && <p className="muted small">Loading reasoning…</p>}
+              {!dayReasoningModalLoading && dayReasoningModalError && (
+                <p className="error-text">{dayReasoningModalError}</p>
+              )}
+
+              {!dayReasoningModalLoading && !dayReasoningModalError && dayReasoningModalData && (
+                <>
+                  {dayReasoningModalTab === 'krr' && (
+                    <div className="reasoning-section">
+                      <h4>KRR Logic (this day)</h4>
+                      {dayReasoningModalData.krr_day_text ? (
+                        <pre className="krr-structured-block">
+                          {dayReasoningModalData.krr_day_text}
+                        </pre>
+                      ) : (
+                        <p className="muted small">
+                          No KRR logic is available for this day yet. This may be a rest day or no reasoning has been computed.
+                        </p>
+                      )}
+                    </div>
                   )}
-                </div>
+
+                  {dayReasoningModalTab === 'symbolic' && (
+                    <div className="reasoning-section">
+                      <h4>Symbolic logic summary</h4>
+                      {Array.isArray(dayReasoningModalData.symbolic_summary) &&
+                      dayReasoningModalData.symbolic_summary.length > 0 ? (
+                        <ul className="reasoning-list">
+                          {dayReasoningModalData.symbolic_summary.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="muted small">
+                          No symbolic summary is available for this day yet.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {dayReasoningModalTab === 'llm' && (
+                    <div className="reasoning-section">
+                      <h4>LLM Logic (this day)</h4>
+                      {dayReasoningModalData.llm_reasoning || dayReasoningModalData.llm_explanation ? (
+                        <div className="reason-list-wrap">
+                          <ul className="reasoning-list">
+                            {String(dayReasoningModalData.llm_reasoning || dayReasoningModalData.llm_explanation || '')
+                              .replace(/\r\n/g, '\n')
+                              .split(/\n+/)
+                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                              .filter(Boolean)
+                              .slice(0, 6)
+                              .map((text, idx) => (
+                                <li key={idx}>{text}</li>
+                              ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="muted small">
+                          No LLM reasoning is available for this day yet.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
-        )}
-      </section>
+        </>
+      )}
 
-      {drawerOpen && (
-        <div
-          className="drawer-backdrop"
-          onClick={() => {
-            if (drawerOpen) setDrawerOpen(false)
-          }}
-          aria-hidden
-        />
+      {reasoningModalOpen && (
+        <>
+          <div
+            className="drawer-backdrop"
+            aria-hidden
+            onClick={() => setReasoningModalOpen(false)}
+          />
+          <div
+            className="reasoning-modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reasoning-modal-title"
+          >
+            <header className="reasoning-modal-header">
+              <h3 id="reasoning-modal-title">How this planner reasons</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setReasoningModalOpen(false)}
+              >
+                Close
+              </button>
+            </header>
+
+            <div className="reasoning-modal-tabs" role="tablist" aria-label="Reasoning sections">
+              {[
+                ['overview', 'Overview'],
+                ['krr', 'KRR Logic'],
+                ['llm', 'LLM Logic'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={reasoningModalTab === key}
+                  className={`reasoning-tab ${reasoningModalTab === key ? 'reasoning-tab-active' : ''}`}
+                  onClick={() => setReasoningModalTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="reasoning-modal-body">
+              {globalReasoningLoading && <p className="muted small">Loading reasoning…</p>}
+              {!globalReasoningLoading && globalReasoningError && (
+                <p className="error-text">{globalReasoningError}</p>
+              )}
+
+              {!globalReasoningLoading && !globalReasoningError && globalReasoning && (
+                <>
+                  {reasoningModalTab === 'overview' && (
+                    <div className="reasoning-section">
+                      <p className="muted small">
+                        This summarizes how your <strong>current</strong> profile and stored plan are interpreted.
+                      </p>
+                      <ul className="reasoning-list">
+                        <li>
+                          <strong>Profile</strong>:{' '}
+                          {globalReasoning.profile
+                            ? `${globalReasoning.profile.days_per_week} days/week, intensity ${globalReasoning.profile.intensity}, `
+                              + `injuries ${(globalReasoning.profile.injury_muscles || []).length}, `
+                              + `equipment ${(globalReasoning.profile.equipment_preferences || []).length}.`
+                            : 'No profile information available.'}
+                        </li>
+                        <li>
+                          <strong>Plan</strong>:{' '}
+                          {globalReasoning.has_plan
+                            ? `${(globalReasoning.plan_days || []).length} day(s) currently stored.`
+                            : 'No stored plan yet. Generate a plan to see global reasoning.'}
+                        </li>
+                      </ul>
+                    </div>
+                  )}
+
+                  {reasoningModalTab === 'krr' && (
+                    <div className="reasoning-section">
+                      <h4>Global KRR Logic</h4>
+                      {globalReasoning.krr_global_text ? (
+                        <pre className="krr-structured-block">
+                          {globalReasoning.krr_global_text}
+                        </pre>
+                      ) : (
+                        <p className="muted small">
+                          No KRR logic is available yet. Generate a plan to compute the knowledge-base view.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {reasoningModalTab === 'llm' && (
+                    <div className="reasoning-section">
+                      <h4>LLM Logic (global)</h4>
+                      {globalReasoning.llm_reasoning ? (
+                        <div className="reason-list-wrap">
+                          <ul className="reasoning-list">
+                            {String(globalReasoning.llm_reasoning || '')
+                              .replace(/\r\n/g, '\n')
+                              .split(/\n+/)
+                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                              .filter(Boolean)
+                              .slice(0, 6)
+                              .map((text, idx) => (
+                                <li key={idx}>{text}</li>
+                              ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="muted small">
+                          No LLM reasoning has been computed yet for the current constraints.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   )

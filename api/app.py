@@ -34,6 +34,7 @@ from agent.krr import (
     MUSCLE_ALIASES,
     MUSCLE_GROUP_EXPANSIONS,
     build_global_krr_reasoning,
+    build_symbolic_summary,
     get_krr_logic_summary,
     load_kb,
     normalize_equipment_preferences,
@@ -1663,7 +1664,7 @@ def get_explanation(
     day: str = Query(..., description="Day label, e.g. Day1"),
     user_id: str = Query(..., description="User ID who owns the plan"),
 ):
-    """Return KRR reasoning, structured krr_logic, and LLM explanation for a given day."""
+    """Return unified KRR logic text, symbolic summary, and LLM reasoning for a given day."""
     user_id = _safe_user_id(user_id)
     stored = load_plan_for_user(user_id)
     if not stored:
@@ -1684,6 +1685,8 @@ def get_explanation(
     injuries = prof.get("injury_muscles", []) or []
     equipment = prof.get("equipment_preferences", []) or []
     krr_logic = None
+    krr_global_text = None
+    symbolic_summary: list[str] | None = None
     try:
         df = get_exercises_df()
         load_kb(df, user_id, injuries, equipment_preferences=equipment)
@@ -1694,12 +1697,19 @@ def get_explanation(
             day_label=day,
             day_theme_muscles=day_theme_muscles,
         )
+        krr_global_text = build_global_krr_reasoning(
+            user_id=user_id,
+            injury_muscles=injuries,
+            equipment_preferences=equipment,
+            krr_logic=krr_logic,
+        )
+        symbolic_summary = build_symbolic_summary(krr_logic)
     except Exception:
         logger.exception("explanation.get krr_logic_error user_id=%s day=%s", user_id, day)
 
     skipped = "All exercises for this day target injured muscles." if not exercises else None
     llm = LLM()
-    llm_explanation = llm.explain_krr_reasoning(krr_logic, day_krr or None)
+    llm_reasoning = llm.explain_krr_reasoning(krr_logic, day_krr or None)
     logger.info(
         "explanation.get user_id=%s day=%s exercises=%s has_krr=%s has_krr_logic=%s llm_chars=%s",
         user_id,
@@ -1707,12 +1717,24 @@ def get_explanation(
         len(exercises),
         bool(day_krr),
         krr_logic is not None,
-        len(llm_explanation or ""),
+        len(llm_reasoning or ""),
     )
-    result = {"krr_reasoning": day_krr, "llm_explanation": llm_explanation}
+    payload: dict[str, Any] = {
+        "krr_day_text": day_krr,
+        "llm_reasoning": llm_reasoning,
+    }
     if krr_logic is not None:
-        result["krr_logic"] = krr_logic
-    return result
+        payload["krr_logic"] = krr_logic
+    if krr_global_text is not None:
+        payload["krr_global_text"] = krr_global_text
+    if symbolic_summary is not None:
+        payload["symbolic_summary"] = symbolic_summary
+
+    # Backwards-compatible fields for existing frontend callers
+    payload.setdefault("krr_reasoning", day_krr)
+    payload.setdefault("llm_explanation", llm_reasoning)
+
+    return payload
 
 
 @app.post("/api/counterfactual")
@@ -1804,6 +1826,80 @@ def krr_trace(
         "krr_logic_version": krr_logic.get("krr_logic_version"),
     }
     return trace
+
+
+@app.get("/api/global-reasoning")
+def get_global_reasoning(
+    user_id: str = Query(GENERIC_USER_ID, description="User ID"),
+):
+    """
+    Return global KRR logic, symbolic summary, optional per-day KRR, and
+    a short LLM explanation for the current stored plan/profile.
+    """
+    user_id = _safe_user_id(user_id)
+    prof = load_profile(user_id)
+    stored = load_plan_for_user(user_id)
+    plan, krr_reasoning = stored if stored else ({}, {})
+
+    injuries = prof.get("injury_muscles", []) or []
+    equipment = prof.get("equipment_preferences", []) or []
+
+    krr_logic = None
+    krr_global_text = None
+    try:
+        df = get_exercises_df()
+        load_kb(df, user_id, injuries, equipment_preferences=equipment)
+        krr_logic = get_krr_logic_summary(
+            user_id=user_id,
+            injury_muscles=injuries,
+            equipment_preferences=equipment,
+        )
+        krr_global_text = build_global_krr_reasoning(
+            user_id=user_id,
+            injury_muscles=injuries,
+            equipment_preferences=equipment,
+            krr_logic=krr_logic,
+        )
+    except Exception:
+        logger.exception("global_reasoning.krr_error user_id=%s", user_id)
+
+    llm_reasoning = None
+    if krr_logic is not None or (krr_reasoning and isinstance(krr_reasoning, dict)):
+        llm = LLM()
+        combined_day_reasoning = ""
+        try:
+            if isinstance(krr_reasoning, dict):
+                combined_day_reasoning = "\n\n".join(
+                    str(text or "").strip()
+                    for _, text in sorted(krr_reasoning.items(), key=lambda kv: kv[0])
+                    if str(text or "").strip()
+                )[:1400]
+        except Exception:
+            combined_day_reasoning = ""
+        try:
+            llm_reasoning = llm.explain_krr_reasoning(krr_logic, combined_day_reasoning or None)
+        except Exception:
+            logger.exception("global_reasoning.llm_error user_id=%s", user_id)
+
+    day_labels = sorted(
+        plan.keys(),
+        key=lambda d: int(re.search(r"\d+", str(d)).group(0)) if re.search(r"\d+", str(d)) else 999,
+    ) if isinstance(plan, dict) else []
+
+    return {
+        "user_id": user_id,
+        "profile": {
+            "injury_muscles": injuries,
+            "equipment_preferences": equipment,
+            "days_per_week": prof.get("days_per_week", DEFAULT_DAYS_PER_WEEK),
+            "intensity": prof.get("intensity", 3),
+        },
+        "has_plan": bool(plan),
+        "plan_days": day_labels,
+        "krr_global_text": krr_global_text,
+        "krr_logic": krr_logic,
+        "llm_reasoning": llm_reasoning,
+    }
 
 
 @app.post("/api/chat", response_model=ChatOut)

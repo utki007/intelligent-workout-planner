@@ -227,11 +227,11 @@ class LLM:
             user_content_parts.append("")
 
         user_content_parts.append(
-            "Task: In 3–5 short sentences or bullet points, restate ONLY the facts in this KRR context: "
-            "injuries avoided, equipment behavior, forbidden exercise count, and how many exercises remain. "
+            "Task: Return ONLY 4–5 short bullet points (no paragraphs) that restate the facts in this KRR context: "
+            "injuries avoided, equipment behavior, forbidden exercise count, safe pool size, and how many exercises remain. "
             "Do NOT invent any new injuries, muscles, equipment, or exercise names. "
             "If you add interpretation beyond the raw KRR facts, explicitly label that part as "
-            "\"LLM interpretation\"."
+            "\"LLM interpretation\" in that bullet."
         )
         user_content = "\n".join(user_content_parts)
 
@@ -247,8 +247,9 @@ class LLM:
                     {
                         "role": "system",
                         "content": (
-                            "You translate symbolic KRR workout-planning logic into clear, grounded English. "
-                            "Stay strictly faithful to the provided KRR context."
+                            "You translate symbolic KRR workout-planning logic into clear, grounded English bullet points. "
+                            "Stay strictly faithful to the provided KRR context. "
+                            "Your entire reply MUST be a Markdown-style bullet list with 4–5 items."
                         ),
                     },
                     {"role": "user", "content": user_content},
