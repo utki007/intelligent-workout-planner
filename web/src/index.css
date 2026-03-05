@@ -1860,6 +1860,19 @@ body {
   background: #fff;
 }
 
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #312e81;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
 .reason-block.safe {
   border-color: #bbf7d0;
   background: var(--green-soft);
@@ -1938,6 +1951,11 @@ body {
   animation: fadeIn 0.16s ease;
 }
 
+.reason-summary {
+  font-weight: 500;
+  margin: 0 0 6px;
+}
+
 .reason-list-wrap {
   margin-top: 6px;
 }
@@ -1948,6 +1966,14 @@ body {
   display: grid;
   gap: 4px;
   font-size: 0.82rem;
+}
+
+.llm-explanation-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 0.85rem;
 }
 
 .reason-raw {

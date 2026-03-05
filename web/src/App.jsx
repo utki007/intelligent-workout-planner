@@ -1839,7 +1839,8 @@ export default function App() {
             <div className="reason-block safe">
               <div className="reason-head">
                 <div className="reason-head-title">
-                  <h4>Symbolic vs Generative Boundary</h4>
+                  <span className="step-badge">Step 1</span>
+                  <h4>Symbolic filter (rules)</h4>
                   <span className="confidence-badge confidence-rule">Rule-grounded</span>
                 </div>
                 <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
@@ -1848,39 +1849,37 @@ export default function App() {
               </div>
               {explainSectionsOpen.symbolic && (
                 <div className="reason-content">
+                  <p className="reason-summary">
+                    We filtered out unsafe movements and applied your injury, equipment, and difficulty constraints.
+                  </p>
                   {drawerData.krr_logic ? (
                     <>
                       <div className="boundary-section symbolic-decisions">
-                        <h5 className="boundary-heading">SYMBOLIC DECISIONS</h5>
+                        <h5 className="boundary-heading">Symbolic decisions</h5>
                         <ul className="boundary-list">
-                          <li>✓ Avoided: {drawerData.krr_logic.injuries?.length
-                            ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
-                            : 'none'} (injury)
+                          <li>
+                            <strong>Injuries</strong>:{' '}
+                            {drawerData.krr_logic.injuries?.length
+                              ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
+                              : 'No injuries blocking exercises'}
                           </li>
-                          <li>✓ Used: {drawerData.krr_logic.equipment?.length
-                            ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
-                            : 'any'} (available equipment)
+                          <li>
+                            <strong>Equipment</strong>:{' '}
+                            {drawerData.krr_logic.equipment?.length
+                              ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
+                              : 'Any available equipment'}
                           </li>
-                          <li>✓ Beginner level filter applied</li>
-                          <li>Constraint order: {(drawerData.krr_logic.constraint_pipeline || []).join(' → ')}</li>
-                          <li>{drawerData.krr_logic.forbidden_count ?? 0} exercise(s) excluded (forbidden)</li>
-                          <li>{drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} in pool after constraints</li>
-                          {drawerData.krr_logic.theme_adjusted_due_to_injury && (
-                            <li>Theme adjusted due to conflict with injury</li>
-                          )}
+                          <li>
+                            <strong>Difficulty</strong>: Beginner-focused filter applied
+                          </li>
+                          <li>
+                            <strong>Safe pool</strong>:{' '}
+                            {drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} exercises after filters
+                          </li>
                         </ul>
                       </div>
-                      <div className="boundary-section llm-interpretation">
-                        <h5 className="boundary-heading">LLM INTERPRETATION</h5>
-                        <p className="muted small">Translation of the symbolic decisions above into human-readable reasoning.</p>
-                      </div>
-                      <p className="boundary-how">
-                        {drawerData.llm_explanation
-                          ? clip(drawerData.llm_explanation, 400)
-                          : drawerData.krr_logic.how_avoidance}
-                      </p>
                       <details className="reason-raw">
-                        <summary>View raw symbolic trace</summary>
+                        <summary>Advanced: full symbolic trace</summary>
                         <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>
                       </details>
                     </>
@@ -1889,12 +1888,14 @@ export default function App() {
                       const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
                       return (
                         <>
-                          <p>✓ Excluded movements violating injury constraints.</p>
-                          {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
+                          <p className="reason-summary">
+                            We excluded movements that violated your injury constraints and focused today&apos;s plan.
+                          </p>
+                          {parsed.themeLine && <p><strong>Focus scope:</strong> {parsed.themeLine}</p>}
                           {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
                           {parsed.recommendations.length > 0 && (
                             <div className="reason-list-wrap">
-                              <p className="muted small">Recommended set</p>
+                              <p className="muted small">Example safe exercises</p>
                               <ul className="reason-list">
                                 {parsed.recommendations.slice(0, 8).map((name) => (
                                   <li key={name}>{toTitleCase(name)}</li>
@@ -1903,7 +1904,7 @@ export default function App() {
                             </div>
                           )}
                           <details className="reason-raw">
-                            <summary>View raw symbolic trace</summary>
+                            <summary>Advanced: full symbolic trace</summary>
                             <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
                           </details>
                         </>
@@ -1914,29 +1915,11 @@ export default function App() {
               )}
             </div>
 
-            <div className="reason-block warning">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <h4>Policy Adaptation</h4>
-                  <span className="confidence-badge confidence-policy">State-aware</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('policy')}>
-                  {explainSectionsOpen.policy ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              {explainSectionsOpen.policy && (
-                <div className="reason-content">
-                  <p>✓ Adjusted workload using soreness and weekly volume state.</p>
-                  <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
-                  <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
-                </div>
-              )}
-            </div>
-
             <div className="reason-block">
               <div className="reason-head">
                 <div className="reason-head-title">
-                  <h4>LLM Synthesis</h4>
+                  <span className="step-badge">Step 2</span>
+                  <h4>LLM synthesis (final plan)</h4>
                   <span className="confidence-badge confidence-llm">LLM rationale</span>
                 </div>
                 <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('llm')}>
@@ -1945,8 +1928,25 @@ export default function App() {
               </div>
               {explainSectionsOpen.llm && (
                 <div className="reason-content">
-                  <p>✓ Balanced split with safety and progression constraints.</p>
-                  <p>{drawerData.llm_explanation || 'No LLM explanation available.'}</p>
+                  <p className="reason-summary">
+                    We arranged the filtered exercises into a balanced, progressive split that respects your safety limits.
+                  </p>
+                  {drawerData.llm_explanation ? (
+                    <ul className="llm-explanation-list">
+                      {(drawerData.llm_explanation || '')
+                        .replace(/\r\n/g, '\n')
+                        .split(/\n+/)
+                        .flatMap((line) => line.split(' - '))
+                        .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                        .filter(Boolean)
+                        .slice(0, 6)
+                        .map((text, idx) => (
+                          <li key={idx}>{text}</li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p className="muted small">No LLM explanation available.</p>
+                  )}
                 </div>
               )}
             </div>
