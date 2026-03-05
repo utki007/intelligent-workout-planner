@@ -44,12 +44,68 @@ function dayNumber(label) {
   return m ? Number(m[0]) : 0
 }
 
+function normalizeDayToken(label) {
+  return String(label || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+}
+
 function formatDayLabel(label) {
   return String(label || '').replace(/^Day(\d+)$/i, 'Day $1')
 }
 
 function sortedDayLabelsFromPlan(plan) {
   return Object.keys(plan || {}).sort((a, b) => dayNumber(a) - dayNumber(b))
+}
+
+function resolveDayLabel(labels, preferred) {
+  const requested = normalizeDayToken(preferred)
+  if (!requested) return labels[0] || null
+  const exact = labels.find((label) => normalizeDayToken(label) === requested)
+  return exact || labels[0] || null
+}
+
+function normalizedExerciseNamesByDay(plan) {
+  const out = {}
+  for (const day of sortedDayLabelsFromPlan(plan || {})) {
+    const names = (plan?.[day] || [])
+      .map((ex) => String(ex?.name || '').trim().toLowerCase())
+      .filter(Boolean)
+    out[day] = Array.from(new Set(names))
+  }
+  return out
+}
+
+function summarizePlanExerciseChanges(previousPlan, nextPlan) {
+  if (!previousPlan || !nextPlan) return 'No plan diff available.'
+  const prevByDay = normalizedExerciseNamesByDay(previousPlan)
+  const nextByDay = normalizedExerciseNamesByDay(nextPlan)
+  const dayLabels = Array.from(new Set([...Object.keys(prevByDay), ...Object.keys(nextByDay)]))
+    .sort((a, b) => dayNumber(a) - dayNumber(b))
+
+  const lines = []
+  for (const day of dayLabels) {
+    const prev = prevByDay[day] || []
+    const next = nextByDay[day] || []
+    const added = next.filter((name) => !prev.includes(name))
+    const removed = prev.filter((name) => !next.includes(name))
+    if (!added.length && !removed.length) continue
+    lines.push(
+      `${day}: added [${added.slice(0, 8).join(', ') || 'none'}]; removed [${removed.slice(0, 8).join(', ') || 'none'}]`,
+    )
+    if (lines.length >= 6) break
+  }
+  if (!lines.length) return 'No exercise-name changes detected.'
+  return lines.join('\n')
+}
+
+function summarizeUpdateReasons(updates) {
+  const reasons = []
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'days_per_week')) reasons.push(`days/week=${updates.days_per_week}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'injury_muscles')) reasons.push(`injuries=${(updates.injury_muscles || []).join(', ') || 'none'}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'equipment_preferences')) reasons.push(`equipment=${(updates.equipment_preferences || []).join(', ') || 'none'}`)
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'intensity')) reasons.push(`intensity=${updates.intensity}`)
+  return reasons.join('; ') || 'profile constraints updated'
 }
 
 function clip(text, n = 120) {
@@ -614,15 +670,59 @@ export default function App() {
 
   const statusText = chatLoading ? (chatActivity || '') : ''
 
-  const saveProfile = async (updates) => {
+  const applyServerPlanPayload = (data, preferredDay = null) => {
+    if (!data?.plan || typeof data.plan !== 'object') return null
+    const planPack = {
+      plan: data.plan || {},
+      krr_reasoning: data.krr_reasoning || {},
+      day_themes: data.day_themes || {},
+      day_theme_muscles: data.day_theme_muscles || {},
+      evaluation_ok: data.evaluation_ok,
+      suggestions: data.suggestions || [],
+      requestId: data.requestId || null,
+      createdAt: new Date().toISOString(),
+    }
+    setActivePlan(planPack)
+    const labels = sortedDayLabelsFromPlan(planPack.plan)
+    setSelectedDay(resolveDayLabel(labels, preferredDay ?? selectedDay))
+    return planPack
+  }
+
+  const saveProfile = async (updates, options = {}) => {
     const id = (userId || '').trim()
-    if (!id) return
-    await fetch(`${API}/profile`, {
+    if (!id) return null
+    const res = await fetch(`${API}/profile`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: id, ...updates }),
+      body: JSON.stringify({
+        user_id: id,
+        ...updates,
+        selected_day: options.selectedDay ?? selectedDay ?? null,
+        auto_update_plan: options.autoUpdatePlan ?? true,
+      }),
     })
-    setProfile((prev) => ({ ...prev, ...updates }))
+    const requestId = res.headers.get('X-Request-ID')
+    if (requestId) setLastRequestId(requestId)
+    if (!res.ok) throw new Error(await res.text())
+    const payload = await res.json()
+    const normalizedIntensity = normalizeIntensityValue(payload?.profile?.intensity, normalizeIntensityValue(updates.intensity, profile.intensity))
+    if (payload?.profile && typeof payload.profile === 'object') {
+      setProfile({
+        ...DEFAULT_PROFILE,
+        ...payload.profile,
+        intensity: normalizedIntensity,
+      })
+    } else {
+      setProfile((prev) => ({
+        ...prev,
+        ...updates,
+        intensity: normalizeIntensityValue(updates.intensity, prev.intensity),
+      }))
+    }
+    if (payload?.plan_updated && payload?.plan) {
+      applyServerPlanPayload(payload, options.selectedDay ?? selectedDay ?? null)
+    }
+    return payload
   }
 
   const resolveIntent = async (id, message) => {
@@ -664,7 +764,7 @@ export default function App() {
     return { ...data, requestId }
   }
 
-  const publishPlan = (data, assistantText = null) => {
+  const publishPlan = (data, assistantText = null, preferredDay = null) => {
     const planPack = {
       plan: data.plan || {},
       krr_reasoning: data.krr_reasoning || {},
@@ -678,7 +778,7 @@ export default function App() {
 
     setActivePlan(planPack)
     const labels = sortedDayLabelsFromPlan(planPack.plan)
-    setSelectedDay(labels[0] || null)
+    setSelectedDay(resolveDayLabel(labels, preferredDay))
 
     if (assistantText) {
       setChatMessages((prev) => [
@@ -772,7 +872,7 @@ export default function App() {
 
       if (intent.intent === 'generate_plan') {
         if (hasPersistableUpdates) {
-          await saveProfile(persistableInferred)
+          await saveProfile(persistableInferred, { autoUpdatePlan: false })
           setOnboardingDraft((prev) => ({
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
@@ -808,10 +908,13 @@ export default function App() {
       }
 
       if (intent.intent === 'profile_update') {
-        const fallbackReply = await requestAssistantChat(id, msg)
-        const assistantText = intent.assistant_reply || fallbackReply
+        const previousPlanSnapshot = activePlan?.plan ? JSON.parse(JSON.stringify(activePlan.plan)) : null
         if (hasPersistableUpdates) {
-          await saveProfile(persistableInferred)
+          setChatActivity('Applying dynamic profile update to your plan...')
+          const savePayload = await saveProfile(persistableInferred, {
+            autoUpdatePlan: true,
+            selectedDay,
+          })
           setOnboardingDraft((prev) => ({
             ...prev,
             days: persistableInferred.days_per_week ?? prev.days,
@@ -819,12 +922,51 @@ export default function App() {
             equipment: persistableInferred.equipment_preferences ?? prev.equipment,
             intensity: normalizeIntensityValue(persistableInferred.intensity, prev.intensity),
           }))
-          pushToast('success', 'Profile updated.')
+          if (savePayload?.plan_updated && savePayload?.update_mode === 'remaining') {
+            pushToast('success', 'Profile updated. Remaining days were refreshed automatically.')
+          } else if (savePayload?.plan_updated && savePayload?.update_mode === 'full') {
+            pushToast('success', 'Profile updated. The weekly plan was regenerated automatically.')
+          } else {
+            pushToast('success', 'Profile updated.')
+          }
+          const planSummary = savePayload?.plan
+            ? sortedDayLabelsFromPlan(savePayload.plan)
+              .map((d) => `${d}: ${(savePayload.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+              .join('; ')
+            : null
+          const krrSummary = savePayload?.krr_reasoning
+            ? Object.entries(savePayload.krr_reasoning).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+            : null
+          const changeSummary = savePayload?.plan_updated && previousPlanSnapshot && savePayload?.plan
+            ? summarizePlanExerciseChanges(previousPlanSnapshot, savePayload.plan)
+            : 'No automatic plan update occurred.'
+          const reasonsSummary = summarizeUpdateReasons(persistableInferred)
+          const followUpPrompt = [
+            msg,
+            '',
+            'Dynamic update context:',
+            `Profile changes applied: ${reasonsSummary}`,
+            `Exercise changes:\n${changeSummary}`,
+            'Please explain what changed and why, referencing injury/equipment/intensity/day-count constraints when relevant.',
+          ].join('\n')
+          setChatActivity(savePayload?.plan_updated
+            ? 'Dynamic update applied. Explaining what changed...'
+            : 'Profile saved. Preparing response...')
+          const fallbackReply = await requestAssistantChat(
+            id,
+            followUpPrompt,
+            planSummary,
+            krrSummary,
+            savePayload?.selected_day || selectedDay,
+          )
+          const assistantText = savePayload?.plan_updated ? fallbackReply : (intent.assistant_reply || fallbackReply)
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
           }])
         } else {
+          const fallbackReply = await requestAssistantChat(id, msg)
+          const assistantText = intent.assistant_reply || fallbackReply
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantText,
@@ -987,16 +1129,60 @@ export default function App() {
     const id = (userId || '').trim()
     if (!id) {
       pushToast('error', 'Profile unavailable. Refresh and try again.')
-      return
+      return false
     }
-    await saveProfile({
+    setChatLoading(true)
+    setChatActivity('Applying dynamic profile update to your plan...')
+    const updates = {
       onboarding_complete: true,
       days_per_week: onboardingDraft.days,
       injury_muscles: onboardingDraft.injuries,
       equipment_preferences: onboardingDraft.equipment,
       intensity: normalizeIntensityValue(onboardingDraft.intensity, 3),
-    })
-    pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
+    }
+    const previousPlanSnapshot = activePlan?.plan ? JSON.parse(JSON.stringify(activePlan.plan)) : null
+    try {
+      const payload = await saveProfile(updates, { autoUpdatePlan: true, selectedDay })
+      pushToast('success', 'Onboarding complete. You can now generate a validated plan.')
+      if (payload?.plan_updated && payload?.plan) {
+        setChatActivity('Dynamic update applied. Explaining what changed...')
+        const planSummary = sortedDayLabelsFromPlan(payload.plan)
+          .map((d) => `${d}: ${(payload.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
+          .join('; ')
+        const krrSummary = Object.entries(payload.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
+        const changeSummary = previousPlanSnapshot
+          ? summarizePlanExerciseChanges(previousPlanSnapshot, payload.plan)
+          : 'A new plan was created using the latest profile constraints.'
+        const reasonsSummary = summarizeUpdateReasons(updates)
+        const prompt = [
+          'I updated my training profile and the plan auto-refreshed.',
+          `Profile changes applied: ${reasonsSummary}`,
+          `Exercise changes:\n${changeSummary}`,
+          'Explain what changed and why with a focus on safety constraints.',
+        ].join('\n')
+        try {
+          const assistantReply = await requestAssistantChat(
+            id,
+            prompt,
+            planSummary,
+            krrSummary,
+            payload?.selected_day || selectedDay,
+          )
+          if (assistantReply) {
+            setChatMessages((prev) => [...prev, { role: 'assistant', text: assistantReply }])
+          }
+        } catch {
+          // Keep profile save successful even if explanation call fails.
+        }
+      }
+      return true
+    } catch (e) {
+      pushToast('error', `Save profile failed: ${e.message || 'Unknown error'}`)
+      return false
+    } finally {
+      setChatLoading(false)
+      setChatActivity('')
+    }
   }
 
   const safeIntensity = normalizeIntensityValue(profile.intensity, 3)
@@ -1280,8 +1466,9 @@ export default function App() {
                 type="button"
                 className="btn btn-primary"
                 onClick={async () => {
-                  await completeOnboarding()
                   setProfileEdit(false)
+                  const ok = await completeOnboarding()
+                  if (!ok) setProfileEdit(true)
                 }}
               >
                 Save profile

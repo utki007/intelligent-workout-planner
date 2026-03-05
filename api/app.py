@@ -326,6 +326,8 @@ class ProfileUpdateIn(BaseModel):
     intensity: float | None = None
     onboarding_complete: bool | None = None
     days_per_week: int | None = None
+    selected_day: str | None = None
+    auto_update_plan: bool | None = True
 
 
 class DayActionIn(BaseModel):
@@ -957,6 +959,174 @@ def _structured_progress_facts(user_id: str, profile: dict) -> str:
     return json.dumps(facts, ensure_ascii=False)
 
 
+def _coerce_intensity_value(profile: dict | None) -> float:
+    source = profile if isinstance(profile, dict) else {}
+    try:
+        value = float(source.get("intensity", 3))
+    except (TypeError, ValueError):
+        value = 3.0
+    return max(1.0, min(5.0, value))
+
+
+def _dynamic_profile_fields_changed(before: dict | None, after: dict | None) -> list[str]:
+    before_profile = before if isinstance(before, dict) else {}
+    after_profile = after if isinstance(after, dict) else {}
+    changed: list[str] = []
+
+    before_days = clamp_days_per_week(before_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK))
+    after_days = clamp_days_per_week(after_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK))
+    if before_days != after_days:
+        changed.append("days_per_week")
+
+    before_intensity = _coerce_intensity_value(before_profile)
+    after_intensity = _coerce_intensity_value(after_profile)
+    if abs(before_intensity - after_intensity) > 1e-9:
+        changed.append("intensity")
+
+    before_injuries = sorted(normalize_injury_muscles(before_profile.get("injury_muscles", [])))
+    after_injuries = sorted(normalize_injury_muscles(after_profile.get("injury_muscles", [])))
+    if before_injuries != after_injuries:
+        changed.append("injury_muscles")
+
+    before_equipment = sorted(normalize_equipment_preferences(before_profile.get("equipment_preferences", [])))
+    after_equipment = sorted(normalize_equipment_preferences(after_profile.get("equipment_preferences", [])))
+    if before_equipment != after_equipment:
+        changed.append("equipment_preferences")
+
+    return changed
+
+
+def _derive_day_metadata_from_plan(plan: dict[str, list[dict]]) -> tuple[dict[str, str], dict[str, list[str]]]:
+    day_themes: dict[str, str] = {}
+    day_theme_muscles: dict[str, list[str]] = {}
+    for day in _sorted_day_keys(plan):
+        exercises = plan.get(day, []) or []
+        muscles: list[str] = []
+        for ex in exercises:
+            target = str(ex.get("target", "")).strip().lower()
+            if target and target not in muscles:
+                muscles.append(target)
+        day_theme_muscles[day] = muscles[:4]
+        if not muscles:
+            day_themes[day] = "Rest"
+        elif len(muscles) == 1:
+            day_themes[day] = f"{muscles[0].title()} Focus"
+        else:
+            day_themes[day] = " / ".join(m.title() for m in muscles[:2])
+    return day_themes, day_theme_muscles
+
+
+def _merge_regenerated_remaining_days(
+    existing_plan: dict[str, list[dict]],
+    existing_krr: dict[str, str],
+    generated_plan: dict[str, list[dict]],
+    generated_krr: dict[str, str],
+    generated_day_themes: dict[str, str],
+    generated_day_theme_muscles: dict[str, list[str]],
+    selected_day: str | None,
+) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, str], dict[str, list[str]], str]:
+    existing_days = _sorted_day_keys(existing_plan)
+    generated_days = _sorted_day_keys(generated_plan)
+
+    normalized_selected = _normalize_day_label(selected_day)
+    selected_index = -1
+    if normalized_selected:
+        for idx, day in enumerate(existing_days):
+            if _normalize_day_label(day) == normalized_selected:
+                selected_index = idx
+                break
+
+    if selected_index < 0 or len(existing_days) != len(generated_days):
+        return (
+            generated_plan,
+            generated_krr,
+            generated_day_themes,
+            generated_day_theme_muscles,
+            "full",
+        )
+
+    merged_plan: dict[str, list[dict]] = {}
+    merged_krr: dict[str, str] = {}
+    merged_day_themes: dict[str, str] = {}
+    merged_day_theme_muscles: dict[str, list[str]] = {}
+
+    for idx, existing_day in enumerate(existing_days):
+        generated_day = generated_days[idx]
+        if idx < selected_index:
+            merged_plan[existing_day] = existing_plan.get(existing_day, []) or []
+            merged_krr[existing_day] = str(existing_krr.get(existing_day, "") or "")
+        else:
+            merged_plan[existing_day] = generated_plan.get(generated_day, []) or []
+            merged_krr[existing_day] = str(generated_krr.get(generated_day, "") or "")
+
+        merged_day_themes[existing_day] = str(generated_day_themes.get(generated_day, existing_day) or existing_day)
+        merged_day_theme_muscles[existing_day] = list(generated_day_theme_muscles.get(generated_day, []) or [])
+
+    inferred_themes, inferred_muscles = _derive_day_metadata_from_plan(merged_plan)
+    for idx, existing_day in enumerate(existing_days):
+        if idx < selected_index:
+            merged_day_themes[existing_day] = inferred_themes.get(existing_day, merged_day_themes.get(existing_day, existing_day))
+            merged_day_theme_muscles[existing_day] = inferred_muscles.get(
+                existing_day, merged_day_theme_muscles.get(existing_day, [])
+            )
+
+    return merged_plan, merged_krr, merged_day_themes, merged_day_theme_muscles, "remaining"
+
+
+def _auto_refresh_stored_plan_for_profile(
+    user_id: str,
+    selected_day: str | None = None,
+    force_full_regen: bool = False,
+) -> dict | None:
+    user_id = _safe_user_id(user_id)
+    stored = load_plan_for_user(user_id)
+    if not stored:
+        return None
+
+    existing_plan, existing_krr = stored
+    if not existing_plan:
+        return None
+
+    df = get_exercises_df()
+    user_profile, goals = _build_user_profile_for_planner(user_id)
+    generated_plan, evaluation_ok, suggestions, generated_krr, generated_day_themes, generated_day_theme_muscles = (
+        _run_stateless_plan_cycle(user_id, df, user_profile, goals)
+    )
+
+    update_mode = "full"
+    if force_full_regen:
+        merged_plan = generated_plan
+        merged_krr = generated_krr
+        merged_day_themes = generated_day_themes
+        merged_day_theme_muscles = generated_day_theme_muscles
+    else:
+        merged_plan, merged_krr, merged_day_themes, merged_day_theme_muscles, update_mode = (
+            _merge_regenerated_remaining_days(
+                existing_plan=existing_plan,
+                existing_krr=existing_krr,
+                generated_plan=generated_plan,
+                generated_krr=generated_krr,
+                generated_day_themes=generated_day_themes,
+                generated_day_theme_muscles=generated_day_theme_muscles,
+                selected_day=selected_day,
+            )
+        )
+
+    if not merged_day_themes or not merged_day_theme_muscles:
+        merged_day_themes, merged_day_theme_muscles = _derive_day_metadata_from_plan(merged_plan)
+
+    save_plan_for_user(user_id, merged_plan, merged_krr)
+    return {
+        "plan": merged_plan,
+        "krr_reasoning": merged_krr,
+        "day_themes": merged_day_themes,
+        "day_theme_muscles": merged_day_theme_muscles,
+        "evaluation_ok": evaluation_ok,
+        "suggestions": suggestions or [],
+        "update_mode": update_mode,
+    }
+
+
 @app.middleware("http")
 async def request_logger(request: Request, call_next):
     request_id = uuid.uuid4().hex[:10]
@@ -1056,24 +1226,65 @@ def get_equipment_options():
 @app.put("/api/profile")
 def update_profile(body: ProfileUpdateIn):
     """Save profile fields: injuries, intensity, onboarding data."""
+    user_id = _safe_user_id(body.user_id)
+    profile_before = load_profile(user_id)
+
     save_profile(
-        body.user_id,
+        user_id,
         injury_muscles=body.injury_muscles,
         equipment_preferences=body.equipment_preferences,
         intensity=body.intensity,
         onboarding_complete=body.onboarding_complete,
         days_per_week=body.days_per_week,
     )
+    updated_profile = load_profile(user_id)
+
+    plan_update_payload = None
+    plan_update_error = None
+    should_attempt_plan_update = bool(body.auto_update_plan)
+    changed_dynamic_fields = _dynamic_profile_fields_changed(profile_before, updated_profile)
+    if should_attempt_plan_update:
+        if changed_dynamic_fields:
+            days_changed = "days_per_week" in changed_dynamic_fields
+            try:
+                plan_update_payload = _auto_refresh_stored_plan_for_profile(
+                    user_id=user_id,
+                    selected_day=body.selected_day,
+                    force_full_regen=days_changed,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "profile.update.auto_plan_refresh_failed user_id=%s selected_day=%s",
+                    user_id,
+                    body.selected_day,
+                )
+                plan_update_error = str(exc)
+        else:
+            logger.info("profile.update.auto_plan_refresh_skipped user_id=%s reason=no_dynamic_field_change", user_id)
+
     logger.info(
-        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s equipment=%s",
-        body.user_id,
+        "profile.update user_id=%s onboarding=%s days_per_week=%s intensity=%s injuries=%s equipment=%s auto_plan_refresh=%s update_mode=%s changed_dynamic_fields=%s",
+        user_id,
         body.onboarding_complete,
         body.days_per_week,
         body.intensity,
         None if body.injury_muscles is None else len(body.injury_muscles),
         None if body.equipment_preferences is None else len(body.equipment_preferences),
+        should_attempt_plan_update,
+        None if not plan_update_payload else plan_update_payload.get("update_mode"),
+        changed_dynamic_fields,
     )
-    return {"ok": True}
+    response_payload = {
+        "ok": True,
+        "profile": updated_profile,
+        "plan_updated": bool(plan_update_payload),
+        "plan_update_error": plan_update_error,
+        "selected_day": body.selected_day,
+        "changed_dynamic_fields": changed_dynamic_fields,
+    }
+    if plan_update_payload:
+        response_payload.update(plan_update_payload)
+    return response_payload
 
 
 @app.post("/api/intent", response_model=IntentOut)
