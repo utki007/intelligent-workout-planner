@@ -1688,25 +1688,6 @@ export default function App() {
             />
             <button type="submit" className="btn btn-primary chat-send-btn" disabled={chatLoading}>Send</button>
           </form>
-          {hasConversation && (
-            <div className="explanation-default-toggle" role="group" aria-label="Default KRR reasoning visibility">
-              <span className="explanation-toggle-label">KRR reasoning panel:</span>
-              <button
-                type="button"
-                className={`explanation-default-btn ${defaultExplanationView === 'none' ? 'active' : ''}`}
-                onClick={() => setDefaultExplanationView('none')}
-              >
-                Hidden
-              </button>
-              <button
-                type="button"
-                className={`explanation-default-btn ${defaultExplanationView === 'krr' ? 'active' : ''}`}
-                onClick={() => setDefaultExplanationView('krr')}
-              >
-                Shown by default
-              </button>
-            </div>
-          )}
         </div>
 
         {DEV_MODE && lastRequestId && <p className="muted small">Request ID: {lastRequestId}</p>}
