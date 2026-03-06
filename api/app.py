@@ -1051,6 +1051,68 @@ def _derive_day_metadata_from_plan(plan: dict[str, list[dict]]) -> tuple[dict[st
     return day_themes, day_theme_muscles
 
 
+def _newly_added_injury_muscles(before: dict | None, after: dict | None) -> set[str]:
+    before_profile = before if isinstance(before, dict) else {}
+    after_profile = after if isinstance(after, dict) else {}
+    before_injuries = set(normalize_injury_muscles(before_profile.get("injury_muscles", [])))
+    after_injuries = set(normalize_injury_muscles(after_profile.get("injury_muscles", [])))
+    return after_injuries - before_injuries
+
+
+def _exercise_targets(exercise: dict) -> set[str]:
+    raw = str(exercise.get("target", "") or "").strip().lower()
+    if not raw:
+        return set()
+    parts = [part.strip() for part in re.split(r"[,/]", raw) if part.strip()]
+    if not parts:
+        return set()
+    normalized = set(normalize_injury_muscles(parts))
+    return normalized or set(parts)
+
+
+def _day_hits_forbidden_muscles(exercises: list[dict], forbidden_muscles: set[str]) -> bool:
+    if not forbidden_muscles:
+        return False
+    for exercise in exercises:
+        if _exercise_targets(exercise) & forbidden_muscles:
+            return True
+    return False
+
+
+def _merge_regenerated_injury_affected_days(
+    existing_plan: dict[str, list[dict]],
+    existing_krr: dict[str, str],
+    generated_plan: dict[str, list[dict]],
+    generated_krr: dict[str, str],
+    newly_forbidden_muscles: set[str],
+) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, str], dict[str, list[str]], str]:
+    existing_days = _sorted_day_keys(existing_plan)
+    generated_days = _sorted_day_keys(generated_plan)
+
+    if not newly_forbidden_muscles or len(existing_days) != len(generated_days):
+        day_themes, day_theme_muscles = _derive_day_metadata_from_plan(generated_plan)
+        return generated_plan, generated_krr, day_themes, day_theme_muscles, "full"
+
+    merged_plan: dict[str, list[dict]] = {}
+    merged_krr: dict[str, str] = {}
+    changed = False
+
+    for idx, existing_day in enumerate(existing_days):
+        generated_day = generated_days[idx]
+        existing_exercises = list(existing_plan.get(existing_day, []) or [])
+        if _day_hits_forbidden_muscles(existing_exercises, newly_forbidden_muscles):
+            merged_plan[existing_day] = list(generated_plan.get(generated_day, []) or [])
+            merged_krr[existing_day] = str(generated_krr.get(generated_day, "") or "")
+            changed = True
+        else:
+            merged_plan[existing_day] = existing_exercises
+            merged_krr[existing_day] = str(existing_krr.get(existing_day, "") or "")
+
+    merged_day_themes, merged_day_theme_muscles = _derive_day_metadata_from_plan(merged_plan)
+    update_mode = "injury_affected_days" if changed else "injury_noop"
+    return merged_plan, merged_krr, merged_day_themes, merged_day_theme_muscles, update_mode
+
+
 def _merge_regenerated_remaining_days(
     existing_plan: dict[str, list[dict]],
     existing_krr: dict[str, str],
@@ -1112,6 +1174,9 @@ def _auto_refresh_stored_plan_for_profile(
     user_id: str,
     selected_day: str | None = None,
     force_full_regen: bool = False,
+    profile_before: dict | None = None,
+    profile_after: dict | None = None,
+    changed_dynamic_fields: list[str] | None = None,
 ) -> dict | None:
     user_id = _safe_user_id(user_id)
     stored = load_plan_for_user(user_id)
@@ -1129,11 +1194,24 @@ def _auto_refresh_stored_plan_for_profile(
     )
 
     update_mode = "full"
+    changed_fields = set(changed_dynamic_fields or [])
+    new_injury_muscles = _newly_added_injury_muscles(profile_before, profile_after)
+    injury_only_change = bool(new_injury_muscles) and changed_fields.issubset({"injury_muscles"})
     if force_full_regen:
         merged_plan = generated_plan
         merged_krr = generated_krr
         merged_day_themes = generated_day_themes
         merged_day_theme_muscles = generated_day_theme_muscles
+    elif injury_only_change:
+        merged_plan, merged_krr, merged_day_themes, merged_day_theme_muscles, update_mode = (
+            _merge_regenerated_injury_affected_days(
+                existing_plan=existing_plan,
+                existing_krr=existing_krr,
+                generated_plan=generated_plan,
+                generated_krr=generated_krr,
+                newly_forbidden_muscles=new_injury_muscles,
+            )
+        )
     else:
         merged_plan, merged_krr, merged_day_themes, merged_day_theme_muscles, update_mode = (
             _merge_regenerated_remaining_days(
@@ -1286,6 +1364,9 @@ def update_profile(body: ProfileUpdateIn):
                     user_id=user_id,
                     selected_day=body.selected_day,
                     force_full_regen=days_changed,
+                    profile_before=profile_before,
+                    profile_after=updated_profile,
+                    changed_dynamic_fields=changed_dynamic_fields,
                 )
             except Exception as exc:
                 logger.exception(

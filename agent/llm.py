@@ -318,8 +318,8 @@ class LLM:
             "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names. "
             "Never claim a current weekly plan exists unless plan context explicitly includes a current plan summary or saved plan status says it exists. "
             "If saved plan status is no_saved_plan, do not list Day 1/Day 2 schedules or imply an existing plan; instead state there is no saved plan yet and offer to generate one. "
-            "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
-            "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
+            "Format your final response in clean Markdown when useful: brief and polite introductory sentences, short section headers, bullet lists for exercises/steps, "
+            "brief and polite closing sentences, and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )
         if plan_only_response:
             system += (

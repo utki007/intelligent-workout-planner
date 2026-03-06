@@ -6,6 +6,7 @@ from unittest.mock import patch
 from api.app import (
     _auto_refresh_stored_plan_for_profile,
     _dynamic_profile_fields_changed,
+    _merge_regenerated_injury_affected_days,
     _merge_regenerated_remaining_days,
 )
 
@@ -106,6 +107,54 @@ class DynamicPlanUpdateTests(unittest.TestCase):
         self.assertEqual(merged_plan["Day 1"][0]["name"], "new-1")
         self.assertEqual(merged_krr["Day 4"], "new-krr-4")
 
+    def test_merge_updates_only_days_affected_by_new_injury(self):
+        existing_plan = {
+            "Day 1": [{"name": "old-1", "sets": 3, "reps": 10, "target": "biceps"}],
+            "Day 2": [{"name": "old-2", "sets": 3, "reps": 10, "target": "quads"}],
+            "Day 3": [{"name": "old-3", "sets": 3, "reps": 10, "target": "lats"}],
+        }
+        existing_krr = {"Day 1": "old-krr-1", "Day 2": "old-krr-2", "Day 3": "old-krr-3"}
+        generated_plan = _plan(3, "new")
+        generated_krr = _krr(3, "new-krr")
+
+        merged_plan, merged_krr, _, _, mode = _merge_regenerated_injury_affected_days(
+            existing_plan=existing_plan,
+            existing_krr=existing_krr,
+            generated_plan=generated_plan,
+            generated_krr=generated_krr,
+            newly_forbidden_muscles={"quads"},
+        )
+
+        self.assertEqual(mode, "injury_affected_days")
+        self.assertEqual(merged_plan["Day 1"][0]["name"], "old-1")
+        self.assertEqual(merged_plan["Day 2"][0]["name"], "new-2")
+        self.assertEqual(merged_plan["Day 3"][0]["name"], "old-3")
+        self.assertEqual(merged_krr["Day 1"], "old-krr-1")
+        self.assertEqual(merged_krr["Day 2"], "new-krr-2")
+        self.assertEqual(merged_krr["Day 3"], "old-krr-3")
+
+    def test_merge_keeps_plan_unchanged_when_new_injury_does_not_hit_existing_days(self):
+        existing_plan = _plan(3, "old")
+        existing_krr = _krr(3, "old-krr")
+        generated_plan = _plan(3, "new")
+        generated_krr = _krr(3, "new-krr")
+
+        merged_plan, merged_krr, _, _, mode = _merge_regenerated_injury_affected_days(
+            existing_plan=existing_plan,
+            existing_krr=existing_krr,
+            generated_plan=generated_plan,
+            generated_krr=generated_krr,
+            newly_forbidden_muscles={"quads"},
+        )
+
+        self.assertEqual(mode, "injury_noop")
+        self.assertEqual(merged_plan["Day 1"][0]["name"], "old-1")
+        self.assertEqual(merged_plan["Day 2"][0]["name"], "old-2")
+        self.assertEqual(merged_plan["Day 3"][0]["name"], "old-3")
+        self.assertEqual(merged_krr["Day 1"], "old-krr-1")
+        self.assertEqual(merged_krr["Day 2"], "old-krr-2")
+        self.assertEqual(merged_krr["Day 3"], "old-krr-3")
+
     @patch("api.app.save_plan_for_user")
     @patch("api.app._run_stateless_plan_cycle")
     @patch("api.app._build_user_profile_for_planner")
@@ -141,6 +190,51 @@ class DynamicPlanUpdateTests(unittest.TestCase):
         self.assertEqual(payload["update_mode"], "remaining")
         self.assertEqual(payload["plan"]["Day 1"][0]["name"], "old-1")
         self.assertEqual(payload["plan"]["Day 3"][0]["name"], "new-3")
+        mock_save.assert_called_once()
+
+    @patch("api.app.save_plan_for_user")
+    @patch("api.app._run_stateless_plan_cycle")
+    @patch("api.app._build_user_profile_for_planner")
+    @patch("api.app.get_exercises_df")
+    @patch("api.app.load_plan_for_user")
+    def test_auto_refresh_new_injury_updates_only_affected_days(
+        self,
+        mock_load_plan,
+        mock_get_df,
+        mock_build_profile,
+        mock_run_cycle,
+        mock_save,
+    ):
+        existing_plan = {
+            "Day 1": [{"name": "old-1", "sets": 3, "reps": 10, "target": "biceps"}],
+            "Day 2": [{"name": "old-2", "sets": 3, "reps": 10, "target": "quads"}],
+            "Day 3": [{"name": "old-3", "sets": 3, "reps": 10, "target": "lats"}],
+        }
+        existing_krr = {"Day 1": "old-krr-1", "Day 2": "old-krr-2", "Day 3": "old-krr-3"}
+        generated_plan = _plan(3, "new")
+        generated_krr = _krr(3, "new-krr")
+        generated_themes = {f"Day {i}": f"Theme {i}" for i in range(1, 4)}
+        generated_muscles = {f"Day {i}": ["biceps"] for i in range(1, 4)}
+
+        mock_load_plan.return_value = (existing_plan, existing_krr)
+        mock_get_df.return_value = object()
+        mock_build_profile.return_value = ({"user_id": "default"}, object())
+        mock_run_cycle.return_value = (generated_plan, True, [], generated_krr, generated_themes, generated_muscles)
+
+        payload = _auto_refresh_stored_plan_for_profile(
+            user_id="default",
+            selected_day="Day 3",
+            force_full_regen=False,
+            profile_before={"injury_muscles": []},
+            profile_after={"injury_muscles": ["quads"]},
+            changed_dynamic_fields=["injury_muscles"],
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["update_mode"], "injury_affected_days")
+        self.assertEqual(payload["plan"]["Day 1"][0]["name"], "old-1")
+        self.assertEqual(payload["plan"]["Day 2"][0]["name"], "new-2")
+        self.assertEqual(payload["plan"]["Day 3"][0]["name"], "old-3")
         mock_save.assert_called_once()
 
     @patch("api.app.save_plan_for_user")
