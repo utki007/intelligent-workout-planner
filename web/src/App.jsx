@@ -412,6 +412,16 @@ function IconBrain() {
   )
 }
 
+function IconInfo() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 10.5v4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="7.5" r="1.2" fill="currentColor" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -441,10 +451,8 @@ export default function App() {
   const [dayReasoningShowTrace, setDayReasoningShowTrace] = useState(false)
   const [globalReasoningShowTrace, setGlobalReasoningShowTrace] = useState(false)
   const [expandedExerciseWhy, setExpandedExerciseWhy] = useState(null) // 'Day1-0' | null
-  const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
-  const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
   const [reasoningModalOpen, setReasoningModalOpen] = useState(false)
-  const [reasoningModalTab, setReasoningModalTab] = useState('overview') // 'overview' | 'krr' | 'llm'
+  const [reasoningModalTab, setReasoningModalTab] = useState('llm') // 'llm' | 'krr'
   const [globalReasoning, setGlobalReasoning] = useState(null)
   const [globalReasoningLoading, setGlobalReasoningLoading] = useState(false)
   const [globalReasoningError, setGlobalReasoningError] = useState('')
@@ -546,7 +554,7 @@ export default function App() {
 
   const openReasoningModal = async () => {
     setReasoningModalOpen(true)
-    setReasoningModalTab('overview')
+    setReasoningModalTab('llm')
     setGlobalReasoningError('')
     try {
       setGlobalReasoningLoading(true)
@@ -998,7 +1006,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
           publishPlan(generated, null)
         }
@@ -1066,7 +1073,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         } else {
           const chatPayload = await requestAssistantChat(id, msg)
@@ -1079,7 +1085,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         }
         return
@@ -1094,7 +1099,6 @@ export default function App() {
         ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
         ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
         ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-        ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
       }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
@@ -1298,7 +1302,6 @@ export default function App() {
               ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
               ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
               ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
-              ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
             }])
           }
         } catch {
@@ -1615,18 +1618,6 @@ export default function App() {
             <h1>Workout Planner</h1>
             <p className="top-subtitle">Build safe, personalized weekly workouts</p>
           </div>
-          <div className="top-actions">
-            <button
-              type="button"
-              className="btn training-edit-btn"
-              onClick={openReasoningModal}
-            >
-              <span className="training-edit-btn-icon" aria-hidden="true">
-                <IconBrain />
-              </span>
-              <span>Show reasoning</span>
-            </button>
-          </div>
         </div>
 
         <div className="chat-zone">
@@ -1635,7 +1626,6 @@ export default function App() {
               {(() => {
                 const text = String(m.text || '')
                 const hasExplanation = Boolean(m.krr_reasoning || m.llm_explanation || m.krr_logic)
-                const explView = messageExplanationView[idx] ?? m.explanationView ?? defaultExplanationView
                 const lineBreaks = (text.match(/\n/g) || []).length
                 const isLongAssistantReply = m.role === 'assistant' && !hasExplanation && (text.length > 900 || lineBreaks > 14)
                 const isExpanded = Boolean(expandedMsg[idx])
@@ -1657,60 +1647,6 @@ export default function App() {
                           >
                             {isExpanded ? 'Show less' : 'Show more'}
                           </button>
-                        )}
-                        {(m.llm_explanation || m.krr_reasoning || m.krr_logic) && (
-                          <>
-                            <div className="msg-explanation-toggle-row" role="group" aria-label="Reasoning view">
-                              {m.llm_explanation && (
-                                <button
-                                  type="button"
-                                  className={`msg-explanation-btn msg-explanation-btn-llm ${explView === 'llm' ? 'active' : ''}`}
-                                  title="View generative AI reasoning (natural language summary)"
-                                  aria-expanded={explView === 'llm'}
-                                  onClick={() =>
-                                    setMessageExplanationView((prev) => ({
-                                      ...prev,
-                                      [idx]: explView === 'llm' ? 'none' : 'llm',
-                                    }))
-                                  }
-                                >
-                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconBrain /></span>
-                                  {explView === 'llm' ? 'Hide' : 'View'} Generative Reasoning
-                                </button>
-                              )}
-                              {m.krr_reasoning && (
-                                <button
-                                  type="button"
-                                  className={`msg-explanation-btn msg-explanation-btn-krr ${explView === 'krr' ? 'active' : ''}`}
-                                  title="View symbolic logic (facts, rules, inference)"
-                                  aria-expanded={explView === 'krr'}
-                                  onClick={() =>
-                                    setMessageExplanationView((prev) => ({
-                                      ...prev,
-                                      [idx]: explView === 'krr' ? 'none' : 'krr',
-                                    }))
-                                  }
-                                >
-                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconCode /></span>
-                                  {explView === 'krr' ? 'Hide' : 'View'} Symbolic Logic
-                                </button>
-                              )}
-                            </div>
-                            {explView === 'llm' && m.llm_explanation && (
-                              <div className="msg-body markdown-body msg-llm-view">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {m.llm_explanation}
-                                </ReactMarkdown>
-                              </div>
-                            )}
-                            {explView === 'krr' && m.krr_reasoning && (
-                              <div className="msg-body msg-krr-view">
-                                <pre className="krr-structured-block">
-                                  {m.krr_reasoning}
-                                </pre>
-                              </div>
-                            )}
-                          </>
                         )}
                       </div>
                     ) : (
@@ -1909,9 +1845,13 @@ export default function App() {
               </div>
 
               <div className="training-card-actions day-actions">
+                <button type="button" className="btn training-edit-btn" onClick={openReasoningModal}>
+                  <span className="training-edit-btn-icon" aria-hidden="true"><IconInfo /></span>
+                  <span>How it works</span>
+                </button>
                 <button type="button" className="btn training-edit-btn" onClick={() => openDayReasoningModal(selectedDay)}>
                   <span className="training-edit-btn-icon" aria-hidden="true"><IconSearch /></span>
-                  <span>Explain Day</span>
+                  <span>Why this day</span>
                 </button>
               </div>
             </div>
@@ -2082,9 +2022,8 @@ export default function App() {
 
             <div className="reasoning-modal-tabs" role="tablist" aria-label="Reasoning sections">
               {[
-                ['overview', 'Overview'],
-                ['krr', 'KRR Logic'],
                 ['llm', 'LLM Logic'],
+                ['krr', 'KRR Logic'],
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -2107,27 +2046,28 @@ export default function App() {
 
               {!globalReasoningLoading && !globalReasoningError && globalReasoning && (
                 <>
-                  {reasoningModalTab === 'overview' && (
+                  {reasoningModalTab === 'llm' && (
                     <div className="reasoning-section">
-                      <p className="muted small">
-                        This summarizes how your <strong>current</strong> profile and stored plan are interpreted.
-                      </p>
-                      <ul className="reasoning-list">
-                        <li>
-                          <strong>Profile</strong>:{' '}
-                          {globalReasoning.profile
-                            ? `${globalReasoning.profile.days_per_week} days/week, intensity ${globalReasoning.profile.intensity}, `
-                              + `injuries ${(globalReasoning.profile.injury_muscles || []).length}, `
-                              + `equipment ${(globalReasoning.profile.equipment_preferences || []).length}.`
-                            : 'No profile information available.'}
-                        </li>
-                        <li>
-                          <strong>Plan</strong>:{' '}
-                          {globalReasoning.has_plan
-                            ? `${(globalReasoning.plan_days || []).length} day(s) currently stored.`
-                            : 'No stored plan yet. Generate a plan to see global reasoning.'}
-                        </li>
-                      </ul>
+                      <h4>LLM Logic (global)</h4>
+                      {globalReasoning.llm_reasoning ? (
+                        <div className="reason-list-wrap">
+                          <ul className="reasoning-list">
+                            {String(globalReasoning.llm_reasoning || '')
+                              .replace(/\r\n/g, '\n')
+                              .split(/\n+/)
+                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                              .filter(Boolean)
+                              .slice(0, 6)
+                              .map((text, idx) => (
+                                <li key={idx}>{text}</li>
+                              ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="muted small">
+                          No LLM reasoning has been computed yet for the current constraints.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -2163,31 +2103,6 @@ export default function App() {
                       ) : (
                         <p className="muted small">
                           No KRR logic is available yet. Generate a plan to compute the knowledge-base view.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {reasoningModalTab === 'llm' && (
-                    <div className="reasoning-section">
-                      <h4>LLM Logic (global)</h4>
-                      {globalReasoning.llm_reasoning ? (
-                        <div className="reason-list-wrap">
-                          <ul className="reasoning-list">
-                            {String(globalReasoning.llm_reasoning || '')
-                              .replace(/\r\n/g, '\n')
-                              .split(/\n+/)
-                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
-                              .filter(Boolean)
-                              .slice(0, 6)
-                              .map((text, idx) => (
-                                <li key={idx}>{text}</li>
-                              ))}
-                          </ul>
-                        </div>
-                      ) : (
-                        <p className="muted small">
-                          No LLM reasoning has been computed yet for the current constraints.
                         </p>
                       )}
                     </div>
