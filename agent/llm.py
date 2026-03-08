@@ -227,11 +227,11 @@ class LLM:
             user_content_parts.append("")
 
         user_content_parts.append(
-            "Task: In 3–5 short sentences or bullet points, restate ONLY the facts in this KRR context: "
-            "injuries avoided, equipment behavior, forbidden exercise count, and how many exercises remain. "
+            "Task: Return ONLY 4–5 short bullet points (no paragraphs) that restate the facts in this KRR context: "
+            "injuries avoided, equipment behavior, forbidden exercise count, safe pool size, and how many exercises remain. "
             "Do NOT invent any new injuries, muscles, equipment, or exercise names. "
             "If you add interpretation beyond the raw KRR facts, explicitly label that part as "
-            "\"LLM interpretation\"."
+            "\"LLM interpretation\" in that bullet."
         )
         user_content = "\n".join(user_content_parts)
 
@@ -247,8 +247,9 @@ class LLM:
                     {
                         "role": "system",
                         "content": (
-                            "You translate symbolic KRR workout-planning logic into clear, grounded English. "
-                            "Stay strictly faithful to the provided KRR context."
+                            "You translate symbolic KRR workout-planning logic into clear, grounded English bullet points. "
+                            "Stay strictly faithful to the provided KRR context. "
+                            "Your entire reply MUST be a Markdown-style bullet list with 4–5 items."
                         ),
                     },
                     {"role": "user", "content": user_content},
@@ -317,8 +318,8 @@ class LLM:
             "When recommending exercises, stay grounded in the provided exercise DB context and do not invent exercise names. "
             "Never claim a current weekly plan exists unless plan context explicitly includes a current plan summary or saved plan status says it exists. "
             "If saved plan status is no_saved_plan, do not list Day 1/Day 2 schedules or imply an existing plan; instead state there is no saved plan yet and offer to generate one. "
-            "Format your final response in clean Markdown when useful: short section headers, bullet lists for exercises/steps, "
-            "and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
+            "Format your final response in clean Markdown when useful: brief and polite introductory sentences, short section headers, bullet lists for exercises/steps, "
+            "brief and polite closing sentences, and bold labels for key metrics. Keep formatting lightweight and readable (no giant blocks)."
         )
         if plan_only_response:
             system += (

@@ -119,18 +119,6 @@ function toTitleCase(text) {
     .replace(/\b[a-z]/g, (char) => char.toUpperCase())
 }
 
-function extractQuotedValues(text) {
-  const values = []
-  const re = /"([^"]+)"|'([^']+)'/g
-  let m = re.exec(text)
-  while (m) {
-    const v = (m[1] || m[2] || '').trim()
-    if (v) values.push(v)
-    m = re.exec(text)
-  }
-  return values
-}
-
 function formatKrrLogicFromStructured(krrLogic) {
   if (!krrLogic || typeof krrLogic !== 'object') return null
   const inj = krrLogic.injuries || []
@@ -151,19 +139,48 @@ function formatKrrLogicFromStructured(krrLogic) {
   return parts.join('\n')
 }
 
-function parseSymbolicSummary(reasoningText) {
-  const raw = String(reasoningText || '')
-  const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
-  const themeLine = lines.find((line) => /^Inference\s*\(/i.test(line)) || null
-  const resultLine = lines.find((line) => /^Result\s*:/i.test(line)) || null
-  const recommendedLines = lines.filter((line) => /recommended\(/i.test(line))
-  const quoted = recommendedLines.flatMap((line) => extractQuotedValues(line))
-  const cleaned = Array.from(new Set(quoted.filter((x) => x.toLowerCase() !== 'athlete')))
-  return {
-    themeLine,
-    resultLine,
-    recommendations: cleaned,
-  }
+function KrrStructuredCards({ krrLogic }) {
+  if (!krrLogic || typeof krrLogic !== 'object') return null
+  const inj = krrLogic.injuries || []
+  const eq = krrLogic.equipment || []
+  const pipeline = krrLogic.constraint_pipeline || []
+  const forbiddenCount = krrLogic.forbidden_count ?? 0
+  const allowedCount = krrLogic.allowed_exercises_count ?? 0
+  const how = krrLogic.how_avoidance || ''
+  const themeAdjusted = krrLogic.theme_adjusted_due_to_injury
+
+  return (
+    <div className="krr-cards">
+      <div className={`krr-card krr-card-constraints ${inj.length ? 'krr-card-warning' : 'krr-card-safe'}`}>
+        <h5>Constraints applied</h5>
+        <ul>
+          <li><strong>Injuries (avoided):</strong> {inj.length ? inj.map(toTitleCase).join(', ') : 'None'}</li>
+          <li><strong>Equipment:</strong> {eq.length ? eq.map(toTitleCase).join(', ') : 'Any'}</li>
+          {pipeline.length > 0 && (
+            <li><strong>Filter order:</strong> {pipeline.join(' → ')}</li>
+          )}
+        </ul>
+      </div>
+      <div className="krr-card krr-card-pool">
+        <h5>Exercise pool</h5>
+        <ul>
+          {forbiddenCount > 0 && (
+            <li><strong>{forbiddenCount}</strong> exercise(s) excluded (forbidden by injury filter)</li>
+          )}
+          <li><strong>{allowedCount}</strong> exercise(s) in pool after constraints</li>
+          {themeAdjusted && (
+            <li className="krr-theme-adjust">Theme adjusted due to conflict with injury</li>
+          )}
+        </ul>
+      </div>
+      {how && (
+        <div className="krr-card krr-card-narrative">
+          <h5>Summary</h5>
+          <p>{how}</p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function sorenessClass(value) {
@@ -395,6 +412,16 @@ function IconBrain() {
   )
 }
 
+function IconInfo() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 10.5v4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="7.5" r="1.2" fill="currentColor" />
+    </svg>
+  )
+}
+
 export default function App() {
   const userId = GENERIC_USER_ID
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
@@ -415,17 +442,20 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useState(null)
   const [lastRequestId, setLastRequestId] = useState(null)
 
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [drawerLoading, setDrawerLoading] = useState(false)
-  const [drawerDay, setDrawerDay] = useState(null)
-  const [drawerData, setDrawerData] = useState(null)
-  const [explainSectionsOpen, setExplainSectionsOpen] = useState({
-    symbolic: true,
-    policy: true,
-    llm: true,
-  })
-  const [defaultExplanationView, setDefaultExplanationView] = useState('none') // 'none' | 'krr' | 'llm'
-  const [messageExplanationView, setMessageExplanationView] = useState({}) // idx -> 'krr' | 'llm'
+  const [dayReasoningModalOpen, setDayReasoningModalOpen] = useState(false)
+  const [dayReasoningModalDay, setDayReasoningModalDay] = useState(null)
+  const [dayReasoningModalData, setDayReasoningModalData] = useState(null)
+  const [dayReasoningModalLoading, setDayReasoningModalLoading] = useState(false)
+  const [dayReasoningModalError, setDayReasoningModalError] = useState('')
+  const [dayReasoningModalTab, setDayReasoningModalTab] = useState('krr') // 'krr' | 'symbolic' | 'llm'
+  const [dayReasoningShowTrace, setDayReasoningShowTrace] = useState(false)
+  const [globalReasoningShowTrace, setGlobalReasoningShowTrace] = useState(false)
+  const [expandedExerciseWhy, setExpandedExerciseWhy] = useState(null) // 'Day1-0' | null
+  const [reasoningModalOpen, setReasoningModalOpen] = useState(false)
+  const [reasoningModalTab, setReasoningModalTab] = useState('llm') // 'llm' | 'krr'
+  const [globalReasoning, setGlobalReasoning] = useState(null)
+  const [globalReasoningLoading, setGlobalReasoningLoading] = useState(false)
+  const [globalReasoningError, setGlobalReasoningError] = useState('')
   const [toasts, setToasts] = useState([])
   const toastTimersRef = useRef({})
 
@@ -519,6 +549,27 @@ export default function App() {
       timer: null,
       startedAt: Date.now(),
       remainingMs: remaining,
+    }
+  }
+
+  const openReasoningModal = async () => {
+    setReasoningModalOpen(true)
+    setReasoningModalTab('llm')
+    setGlobalReasoningError('')
+    try {
+      setGlobalReasoningLoading(true)
+      const res = await fetch(`${API}/global-reasoning?user_id=${encodeURIComponent(userId)}`)
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || 'Failed to load global reasoning')
+      }
+      const data = await res.json()
+      setGlobalReasoning(data)
+    } catch (e) {
+      setGlobalReasoning(null)
+      setGlobalReasoningError(e?.message || 'Unable to load global reasoning. Generate a plan or try again later.')
+    } finally {
+      setGlobalReasoningLoading(false)
     }
   }
 
@@ -955,7 +1006,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
           publishPlan(generated, null)
         }
@@ -1023,7 +1073,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         } else {
           const chatPayload = await requestAssistantChat(id, msg)
@@ -1036,7 +1085,6 @@ export default function App() {
             ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
             ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
             ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-            ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
           }])
         }
         return
@@ -1051,7 +1099,6 @@ export default function App() {
         ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
         ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
         ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
-        ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
       }])
     } catch (e) {
       pushToast('error', `Chat failed: ${e.message || 'Unknown error'}`)
@@ -1061,29 +1108,33 @@ export default function App() {
     }
   }
 
-  const openExplanationDrawer = async (day) => {
+  const openDayReasoningModal = async (day) => {
     const id = (userId || '').trim()
     if (!id || !day) return
 
-    setDrawerDay(day)
-    setDrawerOpen(true)
-    setDrawerLoading(true)
-    setDrawerData(null)
-    setExplainSectionsOpen({ symbolic: true, policy: true, llm: true })
+    setDayReasoningModalDay(day)
+    setDayReasoningModalOpen(true)
+    setDayReasoningModalLoading(true)
+    setDayReasoningModalData(null)
+    setDayReasoningModalError('')
+    setDayReasoningModalTab('krr')
 
     try {
       const res = await fetch(`${API}/explanation?day=${encodeURIComponent(day)}&user_id=${encodeURIComponent(id)}`)
-      const data = res.ok ? await res.json() : null
-      setDrawerData(data || { error: await res.text() })
+      if (!res.ok) {
+        setDayReasoningModalError('No reasoning is available for this day yet.')
+        setDayReasoningModalData(null)
+      } else {
+        const data = await res.json()
+        setDayReasoningModalData(data)
+        setDayReasoningModalError('')
+      }
     } catch (e) {
-      setDrawerData({ error: e.message || 'Failed to fetch explanation' })
+      setDayReasoningModalError('No reasoning is available for this day yet.')
+      setDayReasoningModalData(null)
     } finally {
-      setDrawerLoading(false)
+      setDayReasoningModalLoading(false)
     }
-  }
-
-  const toggleExplainSection = (key) => {
-    setExplainSectionsOpen((prev) => ({ ...prev, [key]: !prev[key] }))
   }
 
   const applyDayActionResult = (payload) => {
@@ -1251,7 +1302,6 @@ export default function App() {
               ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
               ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
               ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
-              ...((chatPayload?.krr_logic || chatPayload?.krr_reasoning || chatPayload?.llm_explanation) && { explanationView: defaultExplanationView }),
             }])
           }
         } catch {
@@ -1335,7 +1385,26 @@ export default function App() {
                     <span className="training-metric-icon flame" aria-hidden="true"><IconFlame /></span>
                     <span className="training-metric-label">Intensity level</span>
                   </div>
-                  <span className="training-metric-value">{formattedIntensity} / 5</span>
+                  <span className="training-metric-value">{formattedIntensity}</span>
+                </div>
+
+                <div className={`training-status ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
+                  <p className="training-status-main">
+                    <span className="training-status-meta">
+                      <span className="training-metric-icon training-status-icon info" aria-hidden="true">
+                        <IconDumbbell />
+                      </span>
+                      <span className="training-status-title">Equipment preferences</span>
+                    </span>
+                    <span className="training-status-value safe">
+                      {hasEquipmentPreferences ? `${equipmentList.length}` : 'Any'}
+                    </span>
+                  </p>
+                  {hasEquipmentPreferences && (
+                    <p className="training-status-detail">
+                      Selected: {equipmentList.map((item) => toTitleCase(item)).join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 <div className={`training-status ${hasInjuries ? 'warning' : 'safe'}`}>
@@ -1353,25 +1422,6 @@ export default function App() {
                   {hasInjuries && (
                     <p className="training-status-detail training-status-detail-warning">
                       Avoid loading: {injuryList.map((injury) => toTitleCase(injury)).join(', ')}
-                    </p>
-                  )}
-                </div>
-
-                <div className={`training-status ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
-                  <p className="training-status-main">
-                    <span className="training-status-meta">
-                      <span className="training-metric-icon training-status-icon info" aria-hidden="true">
-                        <IconDumbbell />
-                      </span>
-                      <span className="training-status-title">Equipment preferences</span>
-                    </span>
-                    <span className={`training-status-value ${hasEquipmentPreferences ? 'info' : 'safe'}`}>
-                      {hasEquipmentPreferences ? `${equipmentList.length}` : 'Any'}
-                    </span>
-                  </p>
-                  {hasEquipmentPreferences && (
-                    <p className="training-status-detail">
-                      Selected: {equipmentList.map((item) => toTitleCase(item)).join(', ')}
                     </p>
                   )}
                 </div>
@@ -1568,8 +1618,6 @@ export default function App() {
             <h1>Workout Planner</h1>
             <p className="top-subtitle">Build safe, personalized weekly workouts</p>
           </div>
-          <div className="top-actions">
-          </div>
         </div>
 
         <div className="chat-zone">
@@ -1578,7 +1626,6 @@ export default function App() {
               {(() => {
                 const text = String(m.text || '')
                 const hasExplanation = Boolean(m.krr_reasoning || m.llm_explanation || m.krr_logic)
-                const explView = messageExplanationView[idx] ?? m.explanationView ?? defaultExplanationView
                 const lineBreaks = (text.match(/\n/g) || []).length
                 const isLongAssistantReply = m.role === 'assistant' && !hasExplanation && (text.length > 900 || lineBreaks > 14)
                 const isExpanded = Boolean(expandedMsg[idx])
@@ -1600,60 +1647,6 @@ export default function App() {
                           >
                             {isExpanded ? 'Show less' : 'Show more'}
                           </button>
-                        )}
-                        {(m.llm_explanation || m.krr_reasoning || m.krr_logic) && (
-                          <>
-                            <div className="msg-explanation-toggle-row" role="group" aria-label="Reasoning view">
-                              {m.llm_explanation && (
-                                <button
-                                  type="button"
-                                  className={`msg-explanation-btn msg-explanation-btn-llm ${explView === 'llm' ? 'active' : ''}`}
-                                  title="View generative AI reasoning (natural language summary)"
-                                  aria-expanded={explView === 'llm'}
-                                  onClick={() =>
-                                    setMessageExplanationView((prev) => ({
-                                      ...prev,
-                                      [idx]: explView === 'llm' ? 'none' : 'llm',
-                                    }))
-                                  }
-                                >
-                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconBrain /></span>
-                                  {explView === 'llm' ? 'Hide' : 'View'} Generative Reasoning
-                                </button>
-                              )}
-                              {m.krr_reasoning && (
-                                <button
-                                  type="button"
-                                  className={`msg-explanation-btn msg-explanation-btn-krr ${explView === 'krr' ? 'active' : ''}`}
-                                  title="View symbolic logic (facts, rules, inference)"
-                                  aria-expanded={explView === 'krr'}
-                                  onClick={() =>
-                                    setMessageExplanationView((prev) => ({
-                                      ...prev,
-                                      [idx]: explView === 'krr' ? 'none' : 'krr',
-                                    }))
-                                  }
-                                >
-                                  <span className="msg-explanation-btn-icon" aria-hidden="true"><IconCode /></span>
-                                  {explView === 'krr' ? 'Hide' : 'View'} Symbolic Logic
-                                </button>
-                              )}
-                            </div>
-                            {explView === 'llm' && m.llm_explanation && (
-                              <div className="msg-body markdown-body msg-llm-view">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {m.llm_explanation}
-                                </ReactMarkdown>
-                              </div>
-                            )}
-                            {explView === 'krr' && m.krr_reasoning && (
-                              <div className="msg-body msg-krr-view">
-                                <pre className="krr-structured-block">
-                                  {m.krr_reasoning}
-                                </pre>
-                              </div>
-                            )}
-                          </>
                         )}
                       </div>
                     ) : (
@@ -1801,23 +1794,64 @@ export default function App() {
                 <ol className="exercise-list">
                 {selectedDayExercises.length === 0 && (
                   <li className="exercise-item">
-                    <p className="exercise-name muted">Rest Day</p>
-                    <p className="exercise-prescription muted">—</p>
+                    <div className="exercise-item-main">
+                      <p className="exercise-name muted">Rest Day</p>
+                      <p className="exercise-prescription muted">—</p>
+                    </div>
                   </li>
                 )}
-                {selectedDayExercises.map((ex, idx) => (
-                  <li key={`${ex.name}-${idx}`} className="exercise-item">
-                    <p className="exercise-name">{toTitleCase(ex.name)}</p>
-                    <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
-                  </li>
-                ))}
+                {selectedDayExercises.map((ex, idx) => {
+                  const whyKey = selectedDay ? `${selectedDay}-${idx}` : null
+                  const isWhyExpanded = expandedExerciseWhy === whyKey
+                  const targetMuscle = String(ex.target || '').trim()
+                  const injuryList = profile.injury_muscles || []
+                  const focusMuscles = selectedDayInsights?.focusMuscles || []
+                  const isSafe = !targetMuscle || !injuryList.some((i) => String(i).toLowerCase() === targetMuscle.toLowerCase())
+                  const fitsFocus = !focusMuscles.length || focusMuscles.some((m) => String(m).toLowerCase() === targetMuscle.toLowerCase())
+                  return (
+                    <li key={`${ex.name}-${idx}`} className="exercise-item">
+                      <div className="exercise-item-main">
+                        <p className="exercise-name">{toTitleCase(ex.name)}</p>
+                        <p className="exercise-prescription">{ex.sets} × {ex.reps}</p>
+                        <button
+                          type="button"
+                          className="exercise-why-btn"
+                          onClick={() => setExpandedExerciseWhy(isWhyExpanded ? null : whyKey)}
+                          aria-expanded={isWhyExpanded}
+                          title="Why this exercise?"
+                        >
+                          Why?
+                        </button>
+                      </div>
+                      {isWhyExpanded && (
+                        <div className="exercise-why-expand">
+                          <ul>
+                            {targetMuscle && (
+                              <li><strong>Targets:</strong> {toTitleCase(targetMuscle)}</li>
+                            )}
+                            {isSafe && injuryList.length > 0 && (
+                              <li>Safe: does not load your injured muscles ({injuryList.map(toTitleCase).join(', ')})</li>
+                            )}
+                            {fitsFocus && focusMuscles.length > 0 && (
+                              <li>Fits today&apos;s focus on {focusMuscles.map(toTitleCase).join(', ')}</li>
+                            )}
+                          </ul>
+                        </div>
+                      )}
+                    </li>
+                  )
+                })}
                 </ol>
               </div>
 
               <div className="training-card-actions day-actions">
-                <button type="button" className="btn training-edit-btn" onClick={() => openExplanationDrawer(selectedDay)}>
+                <button type="button" className="btn training-edit-btn" onClick={openReasoningModal}>
+                  <span className="training-edit-btn-icon" aria-hidden="true"><IconInfo /></span>
+                  <span>How it works</span>
+                </button>
+                <button type="button" className="btn training-edit-btn" onClick={() => openDayReasoningModal(selectedDay)}>
                   <span className="training-edit-btn-icon" aria-hidden="true"><IconSearch /></span>
-                  <span>Explain Day</span>
+                  <span>Why this day</span>
                 </button>
               </div>
             </div>
@@ -1825,143 +1859,259 @@ export default function App() {
         )}
       </aside>
 
-      <section className={`explain-drawer ${drawerOpen ? 'open' : ''}`}>
-        <div className="drawer-head">
-          <h3>Reasoning Breakdown{drawerDay ? ` — ${drawerDay}` : ''}</h3>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDrawerOpen(false)}>Close</button>
-        </div>
+      {dayReasoningModalOpen && (
+        <>
+          <div
+            className="drawer-backdrop"
+            aria-hidden
+            onClick={() => { setDayReasoningModalOpen(false); setDayReasoningShowTrace(false) }}
+          />
+          <div
+            className="reasoning-modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="day-reasoning-modal-title"
+          >
+            <header className="reasoning-modal-header">
+              <h3 id="day-reasoning-modal-title">Reasoning for {formatDayLabel(dayReasoningModalDay || '')}</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setDayReasoningModalOpen(false); setDayReasoningShowTrace(false) }}
+              >
+                Close
+              </button>
+            </header>
 
-        {drawerLoading && <p className="muted">Loading reasoning…</p>}
-        {!drawerLoading && drawerData?.error && <p className="error-text">{drawerData.error}</p>}
-
-        {!drawerLoading && drawerData && !drawerData.error && (
-          <div className="drawer-body">
-            <div className="reason-block safe">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <h4>Symbolic vs Generative Boundary</h4>
-                  <span className="confidence-badge confidence-rule">Rule-grounded</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('symbolic')}>
-                  {explainSectionsOpen.symbolic ? 'Hide' : 'Show'}
+            <div className="reasoning-modal-tabs" role="tablist" aria-label="Day reasoning sections">
+              {[
+                ['krr', 'KRR Logic'],
+                ['symbolic', 'Symbolic logic'],
+                ['llm', 'LLM Logic'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={dayReasoningModalTab === key}
+                  className={`reasoning-tab ${dayReasoningModalTab === key ? 'reasoning-tab-active' : ''}`}
+                  onClick={() => setDayReasoningModalTab(key)}
+                >
+                  {label}
                 </button>
-              </div>
-              {explainSectionsOpen.symbolic && (
-                <div className="reason-content">
-                  {drawerData.krr_logic ? (
-                    <>
-                      <div className="boundary-section symbolic-decisions">
-                        <h5 className="boundary-heading">SYMBOLIC DECISIONS</h5>
-                        <ul className="boundary-list">
-                          <li>✓ Avoided: {drawerData.krr_logic.injuries?.length
-                            ? drawerData.krr_logic.injuries.map(toTitleCase).join(', ')
-                            : 'none'} (injury)
-                          </li>
-                          <li>✓ Used: {drawerData.krr_logic.equipment?.length
-                            ? drawerData.krr_logic.equipment.map(toTitleCase).join(', ')
-                            : 'any'} (available equipment)
-                          </li>
-                          <li>✓ Beginner level filter applied</li>
-                          <li>Constraint order: {(drawerData.krr_logic.constraint_pipeline || []).join(' → ')}</li>
-                          <li>{drawerData.krr_logic.forbidden_count ?? 0} exercise(s) excluded (forbidden)</li>
-                          <li>{drawerData.krr_logic.candidate_pool_size_after_constraints ?? 0} in pool after constraints</li>
-                          {drawerData.krr_logic.theme_adjusted_due_to_injury && (
-                            <li>Theme adjusted due to conflict with injury</li>
-                          )}
-                        </ul>
-                      </div>
-                      <div className="boundary-section llm-interpretation">
-                        <h5 className="boundary-heading">LLM INTERPRETATION</h5>
-                        <p className="muted small">Translation of the symbolic decisions above into human-readable reasoning.</p>
-                      </div>
-                      <p className="boundary-how">
-                        {drawerData.llm_explanation
-                          ? clip(drawerData.llm_explanation, 400)
-                          : drawerData.krr_logic.how_avoidance}
-                      </p>
-                      <details className="reason-raw">
-                        <summary>View raw symbolic trace</summary>
-                        <pre>{clip(drawerData.krr_reasoning || 'No raw trace available.', 1600)}</pre>
-                      </details>
-                    </>
-                  ) : (
-                    (() => {
-                      const parsed = parseSymbolicSummary(drawerData.krr_reasoning)
-                      return (
+              ))}
+            </div>
+
+            <div className="reasoning-modal-body">
+              {dayReasoningModalLoading && <p className="muted small">Loading reasoning…</p>}
+              {!dayReasoningModalLoading && dayReasoningModalError && (
+                <p className="error-text">{dayReasoningModalError}</p>
+              )}
+
+              {!dayReasoningModalLoading && !dayReasoningModalError && dayReasoningModalData && (
+                <>
+                  {dayReasoningModalTab === 'krr' && (
+                    <div className="reasoning-section">
+                      <h4>Rules & filters (this day)</h4>
+                      {dayReasoningModalData.krr_logic ? (
                         <>
-                          <p>✓ Excluded movements violating injury constraints.</p>
-                          {parsed.themeLine && <p><strong>Focus Scope:</strong> {parsed.themeLine}</p>}
-                          {parsed.resultLine && <p><strong>Coverage:</strong> {parsed.resultLine}</p>}
-                          {parsed.recommendations.length > 0 && (
-                            <div className="reason-list-wrap">
-                              <p className="muted small">Recommended set</p>
-                              <ul className="reason-list">
-                                {parsed.recommendations.slice(0, 8).map((name) => (
-                                  <li key={name}>{toTitleCase(name)}</li>
-                                ))}
-                              </ul>
+                          <KrrStructuredCards krrLogic={dayReasoningModalData.krr_logic} />
+                          {dayReasoningModalData.krr_day_text && (
+                            <div className="krr-trace-collapse">
+                              <button
+                                type="button"
+                                className="krr-trace-toggle"
+                                onClick={() => setDayReasoningShowTrace((v) => !v)}
+                                aria-expanded={dayReasoningShowTrace}
+                              >
+                                {dayReasoningShowTrace ? 'Hide' : 'Show'} Datalog trace
+                              </button>
+                              {dayReasoningShowTrace && (
+                                <pre className="krr-structured-block krr-trace-pre">
+                                  {dayReasoningModalData.krr_day_text}
+                                </pre>
+                              )}
                             </div>
                           )}
-                          <details className="reason-raw">
-                            <summary>View raw symbolic trace</summary>
-                            <pre>{clip(drawerData.krr_reasoning || 'No symbolic reasoning available.', 1600)}</pre>
-                          </details>
                         </>
-                      )
-                    })()
+                      ) : dayReasoningModalData.krr_day_text ? (
+                        <>
+                          <p className="muted small">Structured summary not available. Showing raw trace:</p>
+                          <pre className="krr-structured-block">{dayReasoningModalData.krr_day_text}</pre>
+                        </>
+                      ) : (
+                        <p className="muted small">
+                          No KRR logic is available for this day yet. This may be a rest day or no reasoning has been computed.
+                        </p>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
-            </div>
 
-            <div className="reason-block warning">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <h4>Policy Adaptation</h4>
-                  <span className="confidence-badge confidence-policy">State-aware</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('policy')}>
-                  {explainSectionsOpen.policy ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              {explainSectionsOpen.policy && (
-                <div className="reason-content">
-                  <p>✓ Adjusted workload using soreness and weekly volume state.</p>
-                  <p className="muted small">Profile intensity drives weekly caps and set scaling.</p>
-                  <p className="muted small">Current intensity: {profile.intensity} • Days/week: {profile.days_per_week}</p>
-                </div>
-              )}
-            </div>
+                  {dayReasoningModalTab === 'symbolic' && (
+                    <div className="reasoning-section">
+                      <h4>Symbolic logic summary</h4>
+                      {Array.isArray(dayReasoningModalData.symbolic_summary) &&
+                      dayReasoningModalData.symbolic_summary.length > 0 ? (
+                        <ul className="reasoning-list">
+                          {dayReasoningModalData.symbolic_summary.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="muted small">
+                          No symbolic summary is available for this day yet.
+                        </p>
+                      )}
+                    </div>
+                  )}
 
-            <div className="reason-block">
-              <div className="reason-head">
-                <div className="reason-head-title">
-                  <h4>LLM Synthesis</h4>
-                  <span className="confidence-badge confidence-llm">LLM rationale</span>
-                </div>
-                <button type="button" className="collapse-btn" onClick={() => toggleExplainSection('llm')}>
-                  {explainSectionsOpen.llm ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              {explainSectionsOpen.llm && (
-                <div className="reason-content">
-                  <p>✓ Balanced split with safety and progression constraints.</p>
-                  <p>{drawerData.llm_explanation || 'No LLM explanation available.'}</p>
-                </div>
+                  {dayReasoningModalTab === 'llm' && (
+                    <div className="reasoning-section">
+                      <h4>LLM Logic (this day)</h4>
+                      {dayReasoningModalData.llm_reasoning || dayReasoningModalData.llm_explanation ? (
+                        <div className="reason-list-wrap">
+                          <ul className="reasoning-list">
+                            {String(dayReasoningModalData.llm_reasoning || dayReasoningModalData.llm_explanation || '')
+                              .replace(/\r\n/g, '\n')
+                              .split(/\n+/)
+                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                              .filter(Boolean)
+                              .slice(0, 6)
+                              .map((text, idx) => (
+                                <li key={idx}>{text}</li>
+                              ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="muted small">
+                          No LLM reasoning is available for this day yet.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
-        )}
-      </section>
+        </>
+      )}
 
-      {drawerOpen && (
-        <div
-          className="drawer-backdrop"
-          onClick={() => {
-            if (drawerOpen) setDrawerOpen(false)
-          }}
-          aria-hidden
-        />
+      {reasoningModalOpen && (
+        <>
+          <div
+            className="drawer-backdrop"
+            aria-hidden
+            onClick={() => { setReasoningModalOpen(false); setGlobalReasoningShowTrace(false) }}
+          />
+          <div
+            className="reasoning-modal card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reasoning-modal-title"
+          >
+            <header className="reasoning-modal-header">
+              <h3 id="reasoning-modal-title">How this planner reasons</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setReasoningModalOpen(false); setGlobalReasoningShowTrace(false) }}
+              >
+                Close
+              </button>
+            </header>
+
+            <div className="reasoning-modal-tabs" role="tablist" aria-label="Reasoning sections">
+              {[
+                ['llm', 'LLM Logic'],
+                ['krr', 'KRR Logic'],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={reasoningModalTab === key}
+                  className={`reasoning-tab ${reasoningModalTab === key ? 'reasoning-tab-active' : ''}`}
+                  onClick={() => setReasoningModalTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="reasoning-modal-body">
+              {globalReasoningLoading && <p className="muted small">Loading reasoning…</p>}
+              {!globalReasoningLoading && globalReasoningError && (
+                <p className="error-text">{globalReasoningError}</p>
+              )}
+
+              {!globalReasoningLoading && !globalReasoningError && globalReasoning && (
+                <>
+                  {reasoningModalTab === 'llm' && (
+                    <div className="reasoning-section">
+                      <h4>LLM Logic (global)</h4>
+                      {globalReasoning.llm_reasoning ? (
+                        <div className="reason-list-wrap">
+                          <ul className="reasoning-list">
+                            {String(globalReasoning.llm_reasoning || '')
+                              .replace(/\r\n/g, '\n')
+                              .split(/\n+/)
+                              .map((chunk) => chunk.replace(/^-\s*/, '').trim())
+                              .filter(Boolean)
+                              .slice(0, 6)
+                              .map((text, idx) => (
+                                <li key={idx}>{text}</li>
+                              ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <p className="muted small">
+                          No LLM reasoning has been computed yet for the current constraints.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {reasoningModalTab === 'krr' && (
+                    <div className="reasoning-section">
+                      <h4>Rules & filters (global)</h4>
+                      {globalReasoning.krr_logic ? (
+                        <>
+                          <KrrStructuredCards krrLogic={globalReasoning.krr_logic} />
+                          {globalReasoning.krr_global_text && (
+                            <div className="krr-trace-collapse">
+                              <button
+                                type="button"
+                                className="krr-trace-toggle"
+                                onClick={() => setGlobalReasoningShowTrace((v) => !v)}
+                                aria-expanded={globalReasoningShowTrace}
+                              >
+                                {globalReasoningShowTrace ? 'Hide' : 'Show'} Datalog trace
+                              </button>
+                              {globalReasoningShowTrace && (
+                                <pre className="krr-structured-block krr-trace-pre">
+                                  {globalReasoning.krr_global_text}
+                                </pre>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      ) : globalReasoning.krr_global_text ? (
+                        <>
+                          <p className="muted small">Structured summary not available. Showing raw trace:</p>
+                          <pre className="krr-structured-block">{globalReasoning.krr_global_text}</pre>
+                        </>
+                      ) : (
+                        <p className="muted small">
+                          No KRR logic is available yet. Generate a plan to compute the knowledge-base view.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   )
