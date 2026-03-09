@@ -189,8 +189,8 @@ def append_chat_turn_to_profile(user_id: str, user_message: str, assistant_respo
     hist.append(
         {
             "ts": int(time.time()),
-            "user": str(user_message or "").strip()[:500],
-            "assistant": str(assistant_response or "").strip()[:1200],
+            "user": str(user_message or "").strip(),
+            "assistant": str(assistant_response or "").strip(),
         }
     )
     prof["chat_history"] = hist[-50:]

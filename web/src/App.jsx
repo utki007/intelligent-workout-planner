@@ -109,8 +109,7 @@ function summarizeUpdateReasons(updates) {
 }
 
 function clip(text, n = 120) {
-  if (!text) return ''
-  return text.length > n ? `${text.slice(0, n)}...` : text
+  return text || ''
 }
 
 function toTitleCase(text) {

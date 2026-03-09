@@ -175,7 +175,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
-                max_tokens=320,
+                max_tokens=800,
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
@@ -205,11 +205,11 @@ class LLM:
         logic_str = ""
         if isinstance(krr_logic, dict) and krr_logic:
             try:
-                logic_str = json.dumps(krr_logic, indent=2, sort_keys=True)[:900]
+                logic_str = json.dumps(krr_logic, indent=2, sort_keys=True)
             except Exception:
-                logic_str = str(krr_logic)[:900]
+                logic_str = str(krr_logic)
 
-        reasoning_snippet = (krr_reasoning or "").strip()[:1400]
+        reasoning_snippet = (krr_reasoning or "").strip()
 
         user_content_parts = [
             "You are translating a KRR (symbolic) workout-planning explanation into plain English.",
@@ -255,7 +255,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.25,
-                max_tokens=320,
+                max_tokens=800,
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
@@ -299,9 +299,9 @@ class LLM:
         if has_saved_plan is not None:
             context.append(f"Plan availability: {'saved_plan_present' if has_saved_plan else 'no_saved_plan' }.")
         if plan_summary:
-            context.append(f"Current plan summary: {plan_summary[:600]}.")
+            context.append(f"Current plan summary: {plan_summary}.")
         if krr_summary:
-            context.append(f"Reasoning context: {krr_summary[:400]}.")
+            context.append(f"Reasoning context: {krr_summary}.")
         if grounded_constraints and explanation_why:
             constraints_str = str(grounded_constraints)[:500]
             context.append(
@@ -351,7 +351,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.4,
-                max_tokens=700,
+                max_tokens=2000,
             )
             choice = response.choices[0] if response.choices else None
             if choice and getattr(choice, "message", None):
@@ -440,7 +440,7 @@ class LLM:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.0,
-                max_tokens=120,
+                max_tokens=256,
                 response_format={"type": "json_object"},
             )
             choice = response.choices[0] if response.choices else None
@@ -619,7 +619,7 @@ class LLM:
                     {"role": "user", "content": json.dumps(payload)},
                 ],
                 temperature=0.2,
-                max_tokens=1200,
+                max_tokens=2000,
                 response_format={"type": "json_object"},
             )
             choice = response.choices[0] if response.choices else None
