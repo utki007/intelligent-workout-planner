@@ -447,7 +447,7 @@ export default function App() {
   const [dayReasoningModalData, setDayReasoningModalData] = useState(null)
   const [dayReasoningModalLoading, setDayReasoningModalLoading] = useState(false)
   const [dayReasoningModalError, setDayReasoningModalError] = useState('')
-  const [dayReasoningModalTab, setDayReasoningModalTab] = useState('krr') // 'krr' | 'symbolic' | 'llm'
+  const [dayReasoningModalTab, setDayReasoningModalTab] = useState('krr') // 'krr' | 'llm'
   const [dayReasoningShowTrace, setDayReasoningShowTrace] = useState(false)
   const [globalReasoningShowTrace, setGlobalReasoningShowTrace] = useState(false)
   const [expandedExerciseWhy, setExpandedExerciseWhy] = useState(null) // 'Day1-0' | null
@@ -1830,7 +1830,7 @@ export default function App() {
                               <li><strong>Targets:</strong> {toTitleCase(targetMuscle)}</li>
                             )}
                             {isSafe && injuryList.length > 0 && (
-                              <li>Safe: does not load your injured muscles ({injuryList.map(toTitleCase).join(', ')})</li>
+                              <li><strong>Safe:</strong> does not load your injured muscles ({injuryList.map(toTitleCase).join(', ')})</li>
                             )}
                             {fitsFocus && focusMuscles.length > 0 && (
                               <li>Fits today&apos;s focus on {focusMuscles.map(toTitleCase).join(', ')}</li>
@@ -1885,9 +1885,8 @@ export default function App() {
 
             <div className="reasoning-modal-tabs" role="tablist" aria-label="Day reasoning sections">
               {[
-                ['krr', 'KRR Logic'],
-                ['symbolic', 'Symbolic logic'],
                 ['llm', 'LLM Logic'],
+                ['krr', 'Symbolic Logic'],                
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -1942,24 +1941,6 @@ export default function App() {
                       ) : (
                         <p className="muted small">
                           No KRR logic is available for this day yet. This may be a rest day or no reasoning has been computed.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {dayReasoningModalTab === 'symbolic' && (
-                    <div className="reasoning-section">
-                      <h4>Symbolic logic summary</h4>
-                      {Array.isArray(dayReasoningModalData.symbolic_summary) &&
-                      dayReasoningModalData.symbolic_summary.length > 0 ? (
-                        <ul className="reasoning-list">
-                          {dayReasoningModalData.symbolic_summary.map((line) => (
-                            <li key={line}>{line}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="muted small">
-                          No symbolic summary is available for this day yet.
                         </p>
                       )}
                     </div>
@@ -2023,7 +2004,7 @@ export default function App() {
             <div className="reasoning-modal-tabs" role="tablist" aria-label="Reasoning sections">
               {[
                 ['llm', 'LLM Logic'],
-                ['krr', 'KRR Logic'],
+                ['krr', 'Symbolic Logic'],
               ].map(([key, label]) => (
                 <button
                   key={key}
@@ -2048,7 +2029,7 @@ export default function App() {
                 <>
                   {reasoningModalTab === 'llm' && (
                     <div className="reasoning-section">
-                      <h4>LLM Logic (global)</h4>
+                      <h4>LLM Logic</h4>
                       {globalReasoning.llm_reasoning ? (
                         <div className="reason-list-wrap">
                           <ul className="reasoning-list">
@@ -2073,7 +2054,7 @@ export default function App() {
 
                   {reasoningModalTab === 'krr' && (
                     <div className="reasoning-section">
-                      <h4>Rules & filters (global)</h4>
+                      <h4>Rules & filters</h4>
                       {globalReasoning.krr_logic ? (
                         <>
                           <KrrStructuredCards krrLogic={globalReasoning.krr_logic} />

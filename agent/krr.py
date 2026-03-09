@@ -396,7 +396,7 @@ def build_global_krr_reasoning(
         "  recommended(User, Exercise) <- is_exercise(Exercise) & has_difficulty(Exercise, beginner)",
         "    & ~forbidden(User, Exercise) and (no preferred equipment OR equipment_allowed(User, Exercise)).",
         "",
-        "Inference (global constraints):",
+        "Inference:",
         f"  Constraint pipeline: {' -> '.join(pipeline)}.",
         f"  forbidden_count = {forbidden_count} exercise(s) excluded due to injury filter.",
         f"  allowed_exercises_count = {allowed_count} beginner exercise(s) remain after applying all constraints.",
