@@ -112,6 +112,27 @@ function clip(text, n = 120) {
   return text || ''
 }
 
+function formatPlanForChat(plan, dayThemes = {}, summary = null) {
+  const labels = sortedDayLabelsFromPlan(plan || {})
+  const sections = labels.map((day) => {
+    const theme = dayThemes[day] || day
+    const exs = plan[day] || []
+    if (exs.length === 0) return `### ${day} — Rest\n*No exercises*`
+    const lines = exs.map((e) => {
+      const rx = `**${e.sets}×${e.reps}**`
+      return e.hint
+        ? `- ${toTitleCase(e.name)} ${rx} — *${e.hint}*`
+        : `- ${toTitleCase(e.name)} ${rx}`
+    })
+    return `### ${day} — ${theme}\n${lines.join('\n')}`
+  })
+  const intro = 'Your plan is ready. Use the day tabs on the right to inspect.'
+  const summaryBlock = summary && String(summary).trim()
+    ? `\n\n*${String(summary).trim()}*\n`
+    : ''
+  return `${intro}${summaryBlock}\n\n---\n\n${sections.join('\n\n')}`
+}
+
 function toTitleCase(text) {
   return String(text || '')
     .toLowerCase()
@@ -768,6 +789,7 @@ export default function App() {
       day_theme_muscles: data.day_theme_muscles || {},
       evaluation_ok: data.evaluation_ok,
       suggestions: data.suggestions || [],
+      summary: data.summary ?? null,
       requestId: data.requestId || null,
       createdAt: new Date().toISOString(),
     }
@@ -861,6 +883,7 @@ export default function App() {
       day_theme_muscles: data.day_theme_muscles || {},
       evaluation_ok: data.evaluation_ok,
       suggestions: data.suggestions || [],
+      summary: data.summary ?? null,
       requestId: data.requestId || null,
       createdAt: new Date().toISOString(),
     }
@@ -978,33 +1001,15 @@ export default function App() {
         if (generated?.plan) {
           const labels = sortedDayLabelsFromPlan(generated.plan || {})
           const selected = labels[0] || selectedDay || null
-          const planSummary = labels
-            .map((d) => `${d}: ${(generated.plan[d] || []).map((e) => e.name).join(', ') || 'Rest'}`)
-            .join('; ')
-          const krrSummary = Object.entries(generated.krr_reasoning || {}).slice(0, 2).map(([, v]) => clip(v, 240)).join(' ')
-          setChatActivity('Finalizing your response...')
-          let assistantReply = intent.assistant_reply || 'Your plan is ready. I have applied it to your weekly view.'
-          let chatPayload = null
-          try {
-            chatPayload = await requestAssistantChat(
-              id,
-              msg,
-              planSummary,
-              krrSummary,
-              selected,
-              { include_explanation: true, plan_only_response: true },
-            )
-            assistantReply = chatPayload?.response ?? assistantReply
-          } catch {
-            // Fall back to deterministic copy while still publishing the generated plan.
-          }
+          const assistantReply = formatPlanForChat(
+            generated.plan,
+            generated.day_themes,
+            generated.summary,
+          )
           setChatMessages((prev) => [...prev, {
             role: 'assistant',
             text: assistantReply,
-            ...(chatPayload?.krr_logic && { krr_logic: chatPayload.krr_logic }),
-            ...(chatPayload?.krr_reasoning && { krr_reasoning: chatPayload.krr_reasoning }),
-            ...(chatPayload?.llm_explanation && { llm_explanation: chatPayload.llm_explanation }),
-            ...(chatPayload?.llm_grounding_confidence && { llm_grounding_confidence: chatPayload.llm_grounding_confidence }),
+            ...(generated.krr_reasoning && Object.keys(generated.krr_reasoning).length > 0 && { krr_reasoning: generated.krr_reasoning }),
           }])
           publishPlan(generated, null)
         }
