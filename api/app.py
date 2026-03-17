@@ -264,6 +264,7 @@ class PlanOut(BaseModel):
     day_theme_muscles: dict
     evaluation_ok: bool
     suggestions: list[str]
+    summary: str | None = None
 
 
 class ChatIn(BaseModel):
@@ -423,9 +424,9 @@ def _run_stateless_plan_cycle(
     exercises_df: pd.DataFrame,
     user_profile: dict,
     goals: AgentGoals,
-) -> tuple[dict, bool, list[str], dict, dict, dict]:
+) -> tuple[dict, bool, list[str], dict, dict, dict, str | None]:
     transient_state = AgentState(user_id=user_id)
-    plan, krr_reasoning, day_themes, day_theme_muscles = generate_weekly_plan(
+    plan, krr_reasoning, day_themes, day_theme_muscles, plan_summary = generate_weekly_plan(
         user_id=user_id,
         user_profile=user_profile,
         exercises_df=exercises_df,
@@ -448,7 +449,7 @@ def _run_stateless_plan_cycle(
     if removed_count:
         logger.warning("plan.safety removed_injured_exercises=%s user_id=%s", removed_count, user_id)
 
-    return plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles
+    return plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles, plan_summary
 
 
 def resolve_intent(message: str) -> dict:
@@ -1189,7 +1190,7 @@ def _auto_refresh_stored_plan_for_profile(
 
     df = get_exercises_df()
     user_profile, goals = _build_user_profile_for_planner(user_id)
-    generated_plan, evaluation_ok, suggestions, generated_krr, generated_day_themes, generated_day_theme_muscles = (
+    generated_plan, evaluation_ok, suggestions, generated_krr, generated_day_themes, generated_day_theme_muscles, _ = (
         _run_stateless_plan_cycle(user_id, df, user_profile, goals)
     )
 
@@ -1580,7 +1581,7 @@ def generate_plan(profile: ProfileIn):
         "days_per_week": clamp_days_per_week(requested_days or stored_profile.get("days_per_week", DEFAULT_DAYS_PER_WEEK)),
         "intensity": intensity,
     }
-    plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles = _run_stateless_plan_cycle(
+    plan, evaluation_ok, suggestions, krr_reasoning, day_themes, day_theme_muscles, plan_summary = _run_stateless_plan_cycle(
         user_id, df, user_profile, goals
     )
     total_exercises = sum(len(v or []) for v in plan.values())
@@ -1601,6 +1602,7 @@ def generate_plan(profile: ProfileIn):
         day_theme_muscles=day_theme_muscles,
         evaluation_ok=evaluation_ok,
         suggestions=suggestions or [],
+        summary=plan_summary,
     )
 
 
@@ -1614,7 +1616,7 @@ def regenerate_plan_day(body: DayActionIn):
     try:
         df = get_exercises_df()
         user_profile, goals = _build_user_profile_for_planner(user_id)
-        full_plan, _, _, full_krr, day_themes, day_theme_muscles = _run_stateless_plan_cycle(
+        full_plan, _, _, full_krr, day_themes, day_theme_muscles, _ = _run_stateless_plan_cycle(
             user_id,
             df,
             user_profile,

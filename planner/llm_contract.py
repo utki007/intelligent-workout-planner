@@ -14,6 +14,7 @@ class LLMExercise(BaseModel):
     target: str = Field(min_length=1)
     sets: int = Field(ge=1, le=10)
     reps: int = Field(ge=1, le=50)
+    hint: str | None = Field(default=None)
 
 
 class LLMDay(BaseModel):

@@ -178,7 +178,9 @@ class DynamicPlanUpdateTests(unittest.TestCase):
         mock_load_plan.return_value = (existing_plan, existing_krr)
         mock_get_df.return_value = object()
         mock_build_profile.return_value = ({"user_id": "default"}, object())
-        mock_run_cycle.return_value = (generated_plan, True, [], generated_krr, generated_themes, generated_muscles)
+        mock_run_cycle.return_value = (
+            generated_plan, True, [], generated_krr, generated_themes, generated_muscles, None
+        )
 
         payload = _auto_refresh_stored_plan_for_profile(
             user_id="default",
@@ -219,7 +221,9 @@ class DynamicPlanUpdateTests(unittest.TestCase):
         mock_load_plan.return_value = (existing_plan, existing_krr)
         mock_get_df.return_value = object()
         mock_build_profile.return_value = ({"user_id": "default"}, object())
-        mock_run_cycle.return_value = (generated_plan, True, [], generated_krr, generated_themes, generated_muscles)
+        mock_run_cycle.return_value = (
+            generated_plan, True, [], generated_krr, generated_themes, generated_muscles, None
+        )
 
         payload = _auto_refresh_stored_plan_for_profile(
             user_id="default",
@@ -260,7 +264,9 @@ class DynamicPlanUpdateTests(unittest.TestCase):
         mock_load_plan.return_value = (existing_plan, existing_krr)
         mock_get_df.return_value = object()
         mock_build_profile.return_value = ({"user_id": "default"}, object())
-        mock_run_cycle.return_value = (generated_plan, True, [], generated_krr, generated_themes, generated_muscles)
+        mock_run_cycle.return_value = (
+            generated_plan, True, [], generated_krr, generated_themes, generated_muscles, None
+        )
 
         payload = _auto_refresh_stored_plan_for_profile(
             user_id="default",
