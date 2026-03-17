@@ -68,7 +68,7 @@ def run_plan_cycle(
     if goals is None:
         goals = AgentGoals()
 
-    plan, krr_reasoning, day_themes, day_theme_muscles, _ = generate_weekly_plan(
+    plan, krr_reasoning, day_themes, day_theme_muscles = generate_weekly_plan(
         user_id, user_profile, exercises_df, state, goals, modifications=None
     )
 

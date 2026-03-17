@@ -100,7 +100,7 @@ class PlannerRegressionTests(unittest.TestCase):
             "fitness_goals": "build strength",
         }
 
-        plan, krr_reasoning, day_themes, day_theme_muscles, _ = generate_weekly_plan(
+        plan, krr_reasoning, day_themes, day_theme_muscles = generate_weekly_plan(
             "planner_user", profile, df, state, goals
         )
 
@@ -133,7 +133,7 @@ class PlannerRegressionTests(unittest.TestCase):
             "fitness_goals": "stay active",
         }
 
-        plan, _, _, _, _ = generate_weekly_plan("injury_user", profile, df, state, goals)
+        plan, _, _, _ = generate_weekly_plan("injury_user", profile, df, state, goals)
 
         all_targets = [
             str(ex.get("target", "")).lower()
@@ -174,7 +174,7 @@ class PlannerRegressionTests(unittest.TestCase):
             "fitness_goals": "build strength",
         }
 
-        plan, _, _, _, _ = generate_weekly_plan("intensity_count_user", profile, df, state, goals)
+        plan, _, _, _ = generate_weekly_plan("intensity_count_user", profile, df, state, goals)
         for day_exercises in plan.values():
             # Intensity 4 should not collapse to 3/day when catalog is sufficient.
             self.assertGreaterEqual(len(day_exercises), 5)
@@ -204,7 +204,7 @@ class PlannerRegressionTests(unittest.TestCase):
             "fitness_goals": "build strength",
         }
 
-        plan, _, _, _, _ = generate_weekly_plan("equipment_pref_user", profile, df, state, goals)
+        plan, _, _, _ = generate_weekly_plan("equipment_pref_user", profile, df, state, goals)
 
         all_names = {
             str(ex.get("name", "")).strip()
@@ -230,7 +230,6 @@ class MCPRegressionTests(unittest.TestCase):
             {"Day 1": "reasoning"},
             {"Day 1": "Upper Push"},
             {"Day 1": ["pectorals", "delts", "triceps"]},
-            None,
         )
 
         df = pd.DataFrame(

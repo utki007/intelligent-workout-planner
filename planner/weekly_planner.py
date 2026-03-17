@@ -121,73 +121,58 @@ def _desired_exercise_range(intensity: float, day_muscles: list[str]) -> tuple[i
 def _build_exercise_catalog(
     recommended_all: list[str],
     exercises_df: pd.DataFrame,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str], dict[str, dict[str, str]]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, str]]:
     """
     Build:
       - by_muscle: muscle -> ordered unique exercise names
       - targets_by_exercise: exercise name -> target muscles
       - canonical_by_lower: lowercase exercise name -> canonical name
-      - exercise_meta: canonical name -> {description, instructions}
     """
     canonical_by_lower: dict[str, str] = {}
     targets_by_exercise: dict[str, list[str]] = {}
     by_muscle: dict[str, list[str]] = defaultdict(list)
-    exercise_meta: dict[str, dict[str, str]] = {}
 
     # Build lookup from DB
-    row_by_name_lower: dict[str, tuple[str, list[str], str, str]] = {}
+    row_by_name_lower: dict[str, tuple[str, list[str]]] = {}
     for _, row in exercises_df.iterrows():
         name = str(row.get("name", "")).strip()
         if not name:
             continue
         targets = _exercise_targets(row)
-        desc = str(row.get("description", "") or "").strip()
-        instr = str(row.get("instructions", "") or "").strip()
-        row_by_name_lower[name.lower()] = (name, targets, desc, instr)
+        row_by_name_lower[name.lower()] = (name, targets)
 
     # Keep only KB-recommended exercises
     for name in recommended_all:
         rec = row_by_name_lower.get(str(name).strip().lower())
         if rec is None:
             continue
-        canonical, targets, desc, instr = rec
+        canonical, targets = rec
         if not targets:
             continue
         canonical_by_lower[canonical.lower()] = canonical
         targets_by_exercise[canonical] = targets
-        if desc or instr:
-            exercise_meta[canonical] = {"description": desc, "instructions": instr}
         for m in targets:
             if canonical not in by_muscle[m]:
                 by_muscle[m].append(canonical)
 
-    return dict(by_muscle), targets_by_exercise, canonical_by_lower, exercise_meta
+    return dict(by_muscle), targets_by_exercise, canonical_by_lower
 
 
 def _kb_evidence_for_llm(
     by_muscle: dict[str, list[str]],
     injury_muscles: list[str],
     preferred_equipment: list[str],
-    exercise_meta: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Compact KB evidence payload for LLM grounding.
     Keep payload bounded to avoid oversized prompts.
-    Includes exercise descriptions when available.
     """
-    exercise_meta = exercise_meta or {}
     muscles_sorted = sorted(by_muscle.keys(), key=lambda m: (-len(by_muscle[m]), m))
     limited: dict[str, list[str]] = {}
-    exercise_descriptions: dict[str, str] = {}
     for muscle in muscles_sorted[:14]:
         limited[muscle] = by_muscle[muscle][:20]
-        for name in limited[muscle]:
-            meta = exercise_meta.get(name, {})
-            desc = meta.get("description") or ""
-            if desc and name not in exercise_descriptions:
-                exercise_descriptions[name] = desc
 
-    out: dict[str, Any] = {
+    return {
         "rules": [
             "forbidden(User, Exercise) <- trains_muscle(Exercise, M) and injured_muscle(User, M)",
             "equipment_allowed(User, Exercise) <- preferred_equipment(User, Eq) and uses_equipment(Exercise, Eq)",
@@ -199,9 +184,6 @@ def _kb_evidence_for_llm(
         "preferred_equipment": sorted({str(eq).strip().lower() for eq in preferred_equipment if str(eq).strip()}),
         "recommended_by_muscle": limited,
     }
-    if exercise_descriptions:
-        out["exercise_descriptions"] = exercise_descriptions
-    return out
 
 
 def _sanitize_llm_plan(
@@ -280,16 +262,12 @@ def _sanitize_llm_plan(
             reps = _safe_int(ex.get("reps"), 12)
             reps = max(MIN_REPS, min(MAX_REPS, reps))
 
-            hint = str(ex.get("hint", "")).strip()
-            ex_dict: dict[str, Any] = {
+            exercises.append({
                 "name": canonical,
                 "sets": sets,
                 "reps": reps,
                 "target": target,
-            }
-            if hint:
-                ex_dict["hint"] = hint
-            exercises.append(ex_dict)
+            })
             seen.add(canonical)
             if len(exercises) >= MAX_EXERCISES_PER_DAY:
                 break
@@ -434,12 +412,12 @@ def generate_weekly_plan(
     state: AgentState,
     goals: AgentGoals,
     modifications: list[str] | None = None,
-) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, str], dict[str, list[str]], str | None]:
+) -> tuple[dict[str, list[dict]], dict[str, str], dict[str, str], dict[str, list[str]]]:
     """
     Generate a weekly plan with KB-grounded LLM synthesis.
 
     Returns:
-        (plan, krr_reasoning, day_themes, day_theme_muscles, plan_summary)
+        (plan, krr_reasoning, day_themes, day_theme_muscles)
     """
     del modifications  # not currently used for LLM generation
     injury_muscles = user_profile.get("injury_muscles") or []
@@ -464,9 +442,7 @@ def generate_weekly_plan(
     policy = DecisionPolicy(state, goals)
     prescription = policy.get_prescription()
 
-    by_muscle, targets_by_exercise, canonical_by_lower, exercise_meta = _build_exercise_catalog(
-        recommended_all, exercises_df
-    )
+    by_muscle, targets_by_exercise, canonical_by_lower = _build_exercise_catalog(recommended_all, exercises_df)
     logger.info(
         "planner.catalog user_id=%s recommended_exercises=%s muscles=%s",
         user_id,
@@ -474,9 +450,7 @@ def generate_weekly_plan(
         len(by_muscle),
     )
 
-    kb_evidence = _kb_evidence_for_llm(
-        by_muscle, injury_muscles, preferred_equipment, exercise_meta
-    )
+    kb_evidence = _kb_evidence_for_llm(by_muscle, injury_muscles, preferred_equipment)
     llm_profile = {
         "experience_level": user_profile.get("experience_level", "beginner"),
         "days_per_week": days_per_week,
@@ -539,9 +513,6 @@ def generate_weekly_plan(
         max_sets_per_muscle_per_week=goals.max_sets_per_muscle_per_week,
     )
 
-    plan_summary: str | None = None
-    payload_used: dict[str, Any] | None = validated_payload
-
     if day_specs and not verification.is_valid:
         logger.warning(
             "planner.verify failed=true user_id=%s issues=%s",
@@ -582,12 +553,10 @@ def generate_weekly_plan(
         if verification_retry.is_valid:
             day_specs = day_specs_retry
             verification = verification_retry
-            payload_used = validated_retry
             logger.info("planner.verify repair_success=true user_id=%s", user_id)
 
     if not day_specs or not verification.is_valid:
         logger.warning("planner.llm unusable_output=true fallback=algorithmic user_id=%s", user_id)
-        payload_used = None
         day_specs = _fallback_plan(
             days_per_week=days_per_week,
             intensity=intensity,
@@ -627,7 +596,4 @@ def generate_weekly_plan(
             recommended_for_day=recommended_names,
         )
 
-    if payload_used and isinstance(payload_used.get("summary"), str):
-        plan_summary = str(payload_used["summary"]).strip() or None
-
-    return plan, krr_reasoning, day_themes, day_theme_muscles, plan_summary
+    return plan, krr_reasoning, day_themes, day_theme_muscles

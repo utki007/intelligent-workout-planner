@@ -577,7 +577,6 @@ class LLM:
             payload["repair_feedback"] = repair_feedback
         system = (
             "You are a workout planning model that must produce a weekly plan grounded in provided KB evidence.\n"
-            "kb_evidence may include exercise_descriptions (exercise name -> description). Use these to understand each exercise.\n"
             "Return strict JSON only with this schema:\n"
             "{\n"
             '  "days": [\n'
@@ -586,7 +585,7 @@ class LLM:
             '      "theme": "short day theme",\n'
             '      "muscles": ["muscle1", "muscle2"],\n'
             '      "exercises": [\n'
-            '        {"name": "exercise name from kb", "target": "muscle", "sets": 2-4, "reps": 6-20, "hint": "one short line (10-25 words) for the user: what to do or what to expect"}\n'
+            '        {"name": "exercise name from kb", "target": "muscle", "sets": 2-4, "reps": 6-20}\n'
             "      ]\n"
             "    }\n"
             "  ],\n"
@@ -594,7 +593,6 @@ class LLM:
             "}\n"
             "Rules:\n"
             "- Use ONLY exercises present in kb_evidence.recommended_by_muscle.\n"
-            "- For each exercise, add a \"hint\" field: one brief line (10-25 words) telling the user what to do or what to expect (form cue, focus, or safety tip). Base it on kb_evidence.exercise_descriptions when available; otherwise a generic tip.\n"
             "- Never include exercises targeting injured muscles.\n"
             "- If profile.equipment_preferences is non-empty, keep all exercises compatible with those equipment preferences.\n"
             "- Number of day objects must exactly equal constraints.days_per_week.\n"
